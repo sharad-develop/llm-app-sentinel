@@ -172,3 +172,20 @@ class TestIdentity:
         provider = StaticIdentityProvider(identities_path=f)
         assert provider.resolve("u1").roles == ["admin"]
         assert provider.resolve("u2").roles == ["default"]
+
+
+class TestEntityType:
+    """_entity_type retypes refined spans by what the text actually is."""
+
+    def test_email_retyped_regardless_of_model_label(self):
+        from app.pipeline.pii import _entity_type
+
+        assert _entity_type("USERNAME", "john.smith@example.com") == "EMAIL"
+        assert _entity_type("GIVENNAME", "a@b.co") == "EMAIL"
+
+    def test_non_email_keeps_canonical_mapping(self):
+        from app.pipeline.pii import _entity_type
+
+        assert _entity_type("USERNAME", "john.smith") == "USERNAME"
+        assert _entity_type("PER", "John Smith") == "PERSON"
+        assert _entity_type("TELEPHONENUM", "555-0100") == "PHONE"

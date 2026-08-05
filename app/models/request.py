@@ -56,3 +56,25 @@ class AnalyzeRequest(BaseModel):
         if _CONTROL_CHARS.search(v):
             raise ValueError("prompt contains disallowed control characters")
         return v
+
+
+class OutputAnalyzeRequest(BaseModel):
+    """Request schema for POST /v1/output/analyze.
+
+    `output` is the model response to vet. `prompt` is the user prompt it
+    answered — optional, but recommended: Llama Guard judges the response
+    in the context of the conversation, so supplying it improves accuracy.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    output: str = Field(min_length=1, max_length=settings.max_output_length)
+    prompt: str | None = Field(default=None, max_length=settings.max_prompt_length)
+    context: PromptContext | None = None
+
+    @field_validator("output")
+    @classmethod
+    def no_control_chars(cls, v: str) -> str:
+        if _CONTROL_CHARS.search(v):
+            raise ValueError("output contains disallowed control characters")
+        return v

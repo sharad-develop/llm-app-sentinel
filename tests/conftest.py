@@ -9,3 +9,4 @@ import os
 
 os.environ.setdefault("CITADEL_DISABLE_CLASSIFIER", "true")
 os.environ.setdefault("CITADEL_DISABLE_PII", "true")
+os.environ.setdefault("CITADEL_DISABLE_SAFETY", "true")

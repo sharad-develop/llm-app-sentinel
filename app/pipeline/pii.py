@@ -7,6 +7,7 @@ downgrades the verdict to `review` instead of pretending the prompt is
 PII-free.
 """
 import logging
+import re
 from dataclasses import dataclass
 
 from app.config import settings
@@ -61,6 +62,21 @@ def _refine_span(text: str, start: int, end: int) -> tuple[int, int]:
     while start < end and text[start] in "([{\"'":
         start += 1
     return start, end
+
+
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _entity_type(group: str, span_text: str) -> str:
+    """Canonical type for a refined span.
+
+    The model's label describes the tokens it saw, which for an email is
+    often just the local part (labelled USERNAME). After _refine_span
+    expands to the full address, retype by what the text actually is.
+    """
+    if _EMAIL_RE.match(span_text):
+        return "EMAIL"
+    return _CANONICAL.get(group.upper(), group.upper())
 
 
 @dataclass
@@ -163,11 +179,11 @@ class PIIDetector:
             # swallowed by the previous one.
             if entities and start < entities[-1].end:
                 continue
-            group = item["entity_group"].upper()
+            span_text = text[start:end]
             entities.append(
                 PIIEntity(
-                    type=_CANONICAL.get(group, group),
-                    text=text[start:end],
+                    type=_entity_type(item["entity_group"], span_text),
+                    text=span_text,
                     start=start,
                     end=end,
                 )

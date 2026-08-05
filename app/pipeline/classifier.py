@@ -59,7 +59,11 @@ class PromptGuardClassifier:
             import torch
             from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-            self._device = self._choose_device(torch)
+            self._device = (
+                settings.classifier_device
+                if settings.classifier_device != "auto"
+                else self._choose_device(torch)
+            )
             # Prefer the local cache; only touch the network on a cache miss
             # (first run). Avoids per-startup hub probes and works offline.
             try:

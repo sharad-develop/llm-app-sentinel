@@ -127,6 +127,61 @@ class PolicyEngine:
 
         return decision
 
+    def evaluate_output(
+        self,
+        application_id: str,
+        text: str,
+        pii_detector: PIIDetector,
+    ) -> PolicyDecision:
+        """Policy checks that apply to a model response: topics and PII.
+
+        Capabilities are a request-time concern (what the caller may ask
+        the LLM to do) and are skipped here. Same policy file serves both
+        directions; same downgrade-only verdict rules.
+        """
+        policy = self.policies.get(application_id)
+        decision = PolicyDecision(evaluated=True)
+        if policy is None:
+            policy = STRICT_DEFAULT_POLICY
+            decision.note = "no policy for application_id; strict default applied"
+
+        lowered = text.lower()
+        for topic in (policy.get("topics", {}) or {}).get("blocked", []) or []:
+            if any(kw.lower() in lowered for kw in topic.get("keywords", [])):
+                decision.topic_matches.append(topic["id"])
+        if decision.topic_matches:
+            decision.verdict = "block"
+            decision.blocked_by = "topics"
+            return decision
+
+        pii_policy = policy.get("pii") or {}
+        action = pii_policy.get("action")
+        if action:
+            decision.pii_action = action
+            entities = pii_detector.detect(text)
+            if entities is None:
+                decision.verdict = "review"
+                decision.note = (
+                    f"pii detector unavailable: {pii_detector.load_error}"
+                )
+                return decision
+
+            types_filter = pii_policy.get("entities")
+            found = sorted(
+                {e.type for e in entities
+                 if types_filter is None or e.type in types_filter}
+            )
+            decision.pii_found = found
+            if found:
+                if action == "block":
+                    decision.verdict = "block"
+                    decision.blocked_by = "pii"
+                elif action == "redact":
+                    redacted, _ = redact(text, entities, types_filter)
+                    decision.redacted_prompt = redacted
+
+        return decision
+
     @staticmethod
     def _capability_lists(
         policy: dict, roles: list[str]

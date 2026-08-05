@@ -44,7 +44,9 @@ class RuleEngine:
 
     def _load(self) -> None:
         raw = yaml.safe_load(self.rules_path.read_text())
-        for category in ("injection_patterns", "delimiter_patterns", "secret_patterns"):
+        # Any top-level `*_patterns` key is a rule category, so the same
+        # engine serves both the input and output rule packs.
+        for category in (k for k in raw if k.endswith("_patterns")):
             for entry in raw.get(category, []) or []:
                 self.rules.append(
                     CompiledRule(

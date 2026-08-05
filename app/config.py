@@ -67,6 +67,26 @@ class Settings(BaseSettings):
     disable_classifier: bool = False
     classifier_threshold_medium: float = 0.50
     classifier_threshold_high: float = 0.90
+    # Device for classifier: auto (cuda→mps→cpu), or explicit (cuda/mps/cpu).
+    classifier_device: str = "auto"
+
+    # --- output guard ---
+    # Maximum model-output length in characters.
+    max_output_length: int = 16384
+    # Rule pack applied to model outputs (leakage + secret patterns).
+    output_rules_file: str = "rules/output.yaml"
+    # Llama Guard content-safety model. Generates safe/unsafe verdicts with
+    # hazard categories (S1..S14). Gated on Hugging Face — request access
+    # or point at an ungated mirror.
+    safety_model: str = "meta-llama/Llama-Guard-3-1B"
+    disable_safety: bool = False
+    # Verdict + category codes fit comfortably in a few tokens.
+    safety_max_new_tokens: int = 20
+    # Device for safety classifier: auto (cuda→mps→cpu), or explicit (cuda/mps/cpu).
+    safety_device: str = "auto"
+    # Comma-separated Llama Guard hazard codes to exclude from enforcement,
+    # e.g. "S6,S13" to allow specialized advice and elections content.
+    safety_excluded_categories: str = ""
 
     # --- policy ---
     # Directory of per-application policy YAML files (<application_id>.yaml).

@@ -61,3 +61,38 @@ class AnalyzeResponse(BaseModel):
     prompt_hash: str
     pipeline: PipelineDetail
     meta: ResponseMeta
+
+
+# --- POST /v1/output/analyze ---
+
+
+class SafetyStageResult(BaseModel):
+    """Llama Guard verdict: binary safe/unsafe plus hazard categories —
+    no score, unlike the input classifier."""
+
+    ran: bool
+    safe: bool | None = None
+    categories: list[str] = []
+    model: str | None = None
+    note: str | None = None
+
+
+class OutputPipelineDetail(BaseModel):
+    # Field order mirrors execution order: policy (redaction) runs before
+    # the safety classifier so Llama Guard judges the sanitized text.
+    schema_validation: SchemaStageResult = SchemaStageResult()
+    normalization: NormalizationStageResult = NormalizationStageResult()
+    rule_checks: RuleChecksStageResult | None = None
+    policy: PolicyStageResult | None = None
+    safety: SafetyStageResult | None = None
+
+
+class OutputAnalyzeResponse(BaseModel):
+    request_id: str
+    verdict: Verdict
+    blocked_at: Literal["rule_checks", "safety", "policy"] | None = None
+    safety_categories: list[str] = []
+    sanitized_output: str | None = None
+    output_hash: str
+    pipeline: OutputPipelineDetail
+    meta: ResponseMeta
