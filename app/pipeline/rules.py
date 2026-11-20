@@ -8,6 +8,7 @@ Rule patterns themselves live in the YAML rule pack (rules_file setting).
 """
 import re
 from dataclasses import dataclass, field
+from importlib.resources import files as _resource_files
 from pathlib import Path
 
 import yaml
@@ -34,16 +35,19 @@ class RuleCheckResult:
 
 class RuleEngine:
     def __init__(self, rules_path: Path | None = None):
-        self.rules_path = rules_path or (
-            Path(__file__).resolve().parents[2] / settings.rules_file
-        )
+        # When no explicit path is given, resolve via importlib.resources so the
+        # engine works correctly in both source trees and installed wheels.
+        if rules_path is None:
+            self._resource = _resource_files("app") / "rules" / settings.rules_file
+        else:
+            self._resource = rules_path
         self.max_encoded_ratio = settings.max_encoded_ratio
         self.min_blob_length = settings.min_blob_length
         self.rules: list[CompiledRule] = []
         self._load()
 
     def _load(self) -> None:
-        raw = yaml.safe_load(self.rules_path.read_text())
+        raw = yaml.safe_load(self._resource.read_text(encoding="utf-8"))
         # Any top-level `*_patterns` key is a rule category, so the same
         # engine serves both the input and output rule packs.
         for category in (k for k in raw if k.endswith("_patterns")):

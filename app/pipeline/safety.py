@@ -12,7 +12,7 @@ and graceful degradation — when the model is unavailable the stage
 reports itself not-ran and the pipeline downgrades to `review`.
 
 Note: the default model (meta-llama/Llama-Guard-3-1B) is gated on
-Hugging Face; request access or point CITADEL_SAFETY_MODEL at an
+Hugging Face; request access or point SENTINEL_SAFETY_MODEL at an
 ungated mirror.
 """
 import logging
@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 
 from app.config import settings
 
-logger = logging.getLogger("prompt_citadel.safety")
+logger = logging.getLogger("llm_sentinel.safety")
 
 # Llama Guard 3 hazard taxonomy (MLCommons). Codes the model may emit
 # after an "unsafe" verdict, mapped to readable category names.
@@ -70,7 +70,7 @@ class LlamaGuardClassifier:
 
     def load(self) -> None:
         if not self.enabled:
-            logger.info("safety classifier disabled via CITADEL_DISABLE_SAFETY")
+            logger.info("safety classifier disabled via SENTINEL_DISABLE_SAFETY")
             return
         try:
             import torch

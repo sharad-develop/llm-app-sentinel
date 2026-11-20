@@ -2,7 +2,7 @@
 
 Loads Meta Llama Prompt Guard 2 locally at startup and runs inference
 in-process. The `transformers`/`torch` stack is an optional extra
-(`pip install prompt-citadel[ml]`); when it's absent or the model fails
+(`pip install llm-sentinel[ml]`); when it's absent or the model fails
 to load, the classifier reports itself unavailable and the pipeline
 falls back to a `review` verdict rather than silently allowing.
 
@@ -21,7 +21,7 @@ from dataclasses import dataclass
 
 from app.config import settings
 
-logger = logging.getLogger("prompt_citadel.classifier")
+logger = logging.getLogger("llm_sentinel.classifier")
 
 # Prompt Guard 2 context window.
 _MAX_TOKENS = 512
@@ -53,7 +53,7 @@ class PromptGuardClassifier:
 
     def load(self) -> None:
         if not self.enabled:
-            logger.info("classifier disabled via CITADEL_DISABLE_CLASSIFIER")
+            logger.info("classifier disabled via SENTINEL_DISABLE_CLASSIFIER")
             return
         try:
             import torch
@@ -88,11 +88,25 @@ class PromptGuardClassifier:
                 if label.upper() in _MALICIOUS_LABELS
             ]
             if not self._malicious_ids:
-                # Fail-safe: a model whose labels we can't interpret must not
-                # silently score everything benign.
-                raise RuntimeError(
-                    f"model exposes no malicious label; labels: {list(label2id)}"
-                )
+                # Some published checkpoints use generic LABEL_0/LABEL_1 names
+                # instead of MALICIOUS/BENIGN. For a 2-class model, the
+                # higher-indexed label is the positive (malicious) class by
+                # the standard sklearn/transformers binary convention.
+                if len(label2id) == 2:
+                    malicious_idx = max(label2id.values())
+                    self._malicious_ids = [malicious_idx]
+                    logger.warning(
+                        "model uses generic labels %s; assuming label id %d "
+                        "is malicious (standard binary convention). "
+                        "Set SENTINEL_CLASSIFIER_MODEL to a checkpoint with "
+                        "named MALICIOUS/BENIGN labels to suppress this warning.",
+                        list(label2id), malicious_idx,
+                    )
+                else:
+                    # Can't guess for >2 classes — fail safe.
+                    raise RuntimeError(
+                        f"model exposes no malicious label; labels: {list(label2id)}"
+                    )
             logger.info(
                 "loaded classifier %s on %s (malicious label ids: %s)",
                 self.model_name, self._device, self._malicious_ids,

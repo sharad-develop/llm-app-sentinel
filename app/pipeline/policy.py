@@ -21,7 +21,9 @@ import yaml
 from app.config import settings
 from app.pipeline.pii import PIIDetector, redact
 
-logger = logging.getLogger("prompt_citadel.policy")
+logger = logging.getLogger("llm_sentinel.policy")
+
+_VALID_PII_ACTIONS = {"block", "redact", "flag"}
 
 STRICT_DEFAULT_POLICY = {
     "capabilities": {"allowed": [], "blocked": []},
@@ -51,15 +53,145 @@ class PolicyEngine:
         self.policies: dict[str, dict] = {}
         self._load()
 
+    _KNOWN_KEYS = {"id", "capabilities", "topics", "pii", "roles"}
+
     def _load(self) -> None:
         if not self.policies_dir.is_dir():
             logger.info("no policies directory at %s", self.policies_dir)
             return
         for path in sorted(self.policies_dir.glob("*.yaml")):
             doc = yaml.safe_load(path.read_text()) or {}
+            self._validate_policy(path.stem, doc)
             app_id = doc.get("id") or path.stem
             self.policies[app_id] = doc
         logger.info("loaded %d policies from %s", len(self.policies), self.policies_dir)
+
+    def _validate_policy(self, name: str, doc: object) -> None:
+        """Validate a policy document, raising ValueError on any structural error."""
+        if not isinstance(doc, dict):
+            raise ValueError(f"policy {name!r}: must be a YAML mapping, got {type(doc).__name__}")
+
+        unknown = set(doc) - self._KNOWN_KEYS
+        if unknown:
+            raise ValueError(f"policy {name!r}: unknown top-level keys {sorted(unknown)}")
+
+        # Validate id type
+        if "id" in doc and not isinstance(doc["id"], str):
+            raise ValueError(
+                f"policy {name!r}: 'id' must be a string, got {type(doc['id']).__name__}"
+            )
+
+        # Validate capabilities section
+        caps_section = doc.get("capabilities")
+        if caps_section is not None:
+            self._validate_capabilities(name, "capabilities", caps_section)
+
+        # Validate roles section
+        roles_section = doc.get("roles")
+        if roles_section is not None:
+            if not isinstance(roles_section, dict):
+                raise ValueError(f"policy {name!r}: 'roles' must be a mapping")
+            for role_name, role_def in roles_section.items():
+                if not isinstance(role_name, str):
+                    raise ValueError(
+                        f"policy {name!r}: role name must be a string, got {type(role_name).__name__}"
+                    )
+                if not isinstance(role_def, dict):
+                    raise ValueError(
+                        f"policy {name!r}: roles[{role_name!r}] must be a mapping"
+                    )
+                unknown_role_keys = set(role_def) - {"capabilities"}
+                if unknown_role_keys:
+                    raise ValueError(
+                        f"policy {name!r}: roles[{role_name!r}] has unknown keys "
+                        f"{sorted(unknown_role_keys)}"
+                    )
+                role_caps = role_def.get("capabilities")
+                if role_caps is not None:
+                    self._validate_capabilities(
+                        name, f"roles[{role_name!r}].capabilities", role_caps
+                    )
+
+        # Validate PII section
+        pii_section = doc.get("pii") or {}
+        if pii_section:
+            if not isinstance(pii_section, dict):
+                raise ValueError(f"policy {name!r}: 'pii' must be a mapping")
+            action = pii_section.get("action")
+            if action is not None and action not in _VALID_PII_ACTIONS:
+                raise ValueError(
+                    f"policy {name!r}: pii.action must be one of "
+                    f"{sorted(_VALID_PII_ACTIONS)}, got {action!r}"
+                )
+            entities = pii_section.get("entities")
+            if entities is not None:
+                if not isinstance(entities, list):
+                    raise ValueError(
+                        f"policy {name!r}: pii.entities must be a list, "
+                        f"got {type(entities).__name__}"
+                    )
+                for i, e in enumerate(entities):
+                    if not isinstance(e, str):
+                        raise ValueError(
+                            f"policy {name!r}: pii.entities[{i}] must be a string, "
+                            f"got {type(e).__name__}"
+                        )
+
+        # Validate topics section
+        topics_section = doc.get("topics") or {}
+        if topics_section and not isinstance(topics_section, dict):
+            raise ValueError(f"policy {name!r}: 'topics' must be a mapping")
+        for i, topic in enumerate((topics_section.get("blocked") or [])):
+            if not isinstance(topic, dict):
+                raise ValueError(
+                    f"policy {name!r}: topics.blocked[{i}] must be a mapping"
+                )
+            topic_id = topic.get("id")
+            if topic_id is None:
+                raise ValueError(
+                    f"policy {name!r}: topics.blocked[{i}] missing required key 'id'"
+                )
+            if not isinstance(topic_id, str):
+                raise ValueError(
+                    f"policy {name!r}: topics.blocked[{i}].id must be a string, "
+                    f"got {type(topic_id).__name__}"
+                )
+            kws = topic.get("keywords")
+            if not isinstance(kws, list) or not kws:
+                raise ValueError(
+                    f"policy {name!r}: topics.blocked[{i}].keywords must be a non-empty list"
+                )
+            for j, kw in enumerate(kws):
+                if not isinstance(kw, str):
+                    raise ValueError(
+                        f"policy {name!r}: topics.blocked[{i}].keywords[{j}] must be a string, "
+                        f"got {type(kw).__name__}"
+                    )
+
+    def _validate_capabilities(self, name: str, path: str, caps: object) -> None:
+        if not isinstance(caps, dict):
+            raise ValueError(
+                f"policy {name!r}: {path!r} must be a mapping, got {type(caps).__name__}"
+            )
+        unknown = set(caps) - {"allowed", "blocked"}
+        if unknown:
+            raise ValueError(
+                f"policy {name!r}: {path!r} has unknown keys {sorted(unknown)}"
+            )
+        for key in ("allowed", "blocked"):
+            lst = caps.get(key)
+            if lst is not None:
+                if not isinstance(lst, list):
+                    raise ValueError(
+                        f"policy {name!r}: {path}.{key} must be a list, "
+                        f"got {type(lst).__name__}"
+                    )
+                for i, item in enumerate(lst):
+                    if not isinstance(item, str):
+                        raise ValueError(
+                            f"policy {name!r}: {path}.{key}[{i}] must be a string, "
+                            f"got {type(item).__name__}"
+                        )
 
     def evaluate(
         self,

@@ -1,18 +1,18 @@
 """Application configuration.
 
 Values are read in this order (highest wins):
-  1. Environment variables prefixed with CITADEL_
+  1. Environment variables prefixed with SENTINEL_
   2. .env file in the project root
   3. Defaults defined here
 
 Typical .env file:
 
-    CITADEL_MAX_PROMPT_LENGTH=4096
-    CITADEL_CONTROL_CHARS_PATTERN=[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]
-    CITADEL_CLASSIFIER_MODEL=meta-llama/Llama-Prompt-Guard-2-86M
-    CITADEL_DISABLE_CLASSIFIER=false
-    CITADEL_CLASSIFIER_THRESHOLD_MEDIUM=0.50
-    CITADEL_CLASSIFIER_THRESHOLD_HIGH=0.90
+    SENTINEL_MAX_PROMPT_LENGTH=4096
+    SENTINEL_CONTROL_CHARS_PATTERN=[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]
+    SENTINEL_CLASSIFIER_MODEL=meta-llama/Llama-Prompt-Guard-2-86M
+    SENTINEL_DISABLE_CLASSIFIER=false
+    SENTINEL_CLASSIFIER_THRESHOLD_MEDIUM=0.50
+    SENTINEL_CLASSIFIER_THRESHOLD_HIGH=0.90
 """
 from pathlib import Path
 
@@ -24,7 +24,7 @@ _ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_prefix="CITADEL_",
+        env_prefix="SENTINEL_",
         env_file=_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
@@ -51,8 +51,8 @@ class Settings(BaseSettings):
     max_newline_run: int = 3
 
     # --- rule checks ---
-    # Path to the YAML rule pack. Absolute or relative to the project root.
-    rules_file: str = "rules/default.yaml"
+    # Filename of the YAML rule pack inside the app/rules/ package directory.
+    rules_file: str = "default.yaml"
     # Regex for base64-like blobs (full pattern, not a character class body).
     base64_blob_pattern: str = r"[A-Za-z0-9+/=]{40,}"
     # Regex for hex-encoded blobs.
@@ -73,8 +73,8 @@ class Settings(BaseSettings):
     # --- output guard ---
     # Maximum model-output length in characters.
     max_output_length: int = 16384
-    # Rule pack applied to model outputs (leakage + secret patterns).
-    output_rules_file: str = "rules/output.yaml"
+    # Filename of the output rule pack inside the app/rules/ package directory.
+    output_rules_file: str = "output.yaml"
     # Llama Guard content-safety model. Generates safe/unsafe verdicts with
     # hazard categories (S1..S14). Gated on Hugging Face — request access
     # or point at an ungated mirror.
@@ -87,6 +87,13 @@ class Settings(BaseSettings):
     # Comma-separated Llama Guard hazard codes to exclude from enforcement,
     # e.g. "S6,S13" to allow specialized advice and elections content.
     safety_excluded_categories: str = ""
+
+    # --- REST API authentication ---
+    # When set, every request to the REST API must include the header:
+    #   Authorization: Bearer <value>
+    # Leave unset (empty) only in trusted network environments where the API
+    # is not reachable from untrusted callers (mTLS, VPC policy, service mesh).
+    api_key: str = ""
 
     # --- policy ---
     # Directory of per-application policy YAML files (<application_id>.yaml).

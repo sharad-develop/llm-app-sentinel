@@ -26,6 +26,8 @@ def analyze_input(body: AnalyzeRequest, request: Request) -> AnalyzeResponse:
     start = time.perf_counter()
     request_id = str(uuid.uuid4())
     app_id = body.context.application_id if body.context else None
+    user_id = body.context.user_id if body.context else None
+    session_id = body.context.session_id if body.context else None
     hashed = prompt_hash(body.prompt)
 
     pipeline = PipelineDetail()
@@ -44,7 +46,8 @@ def analyze_input(body: AnalyzeRequest, request: Request) -> AnalyzeResponse:
     if not rule_result.passed:
         audit_log(
             request_id, "rule_checks", "block", hashed,
-            application_id=app_id, violations=rule_result.violations,
+            application_id=app_id, user_id=user_id, session_id=session_id,
+            violations=rule_result.violations,
         )
         return _respond(
             request_id, "block", pipeline, hashed, start,
@@ -75,7 +78,8 @@ def analyze_input(body: AnalyzeRequest, request: Request) -> AnalyzeResponse:
 
     audit_log(
         request_id, "classifier", verdict, hashed,
-        application_id=app_id, risk_score=risk_score,
+        application_id=app_id, user_id=user_id, session_id=session_id,
+        risk_score=risk_score,
     )
     if verdict == "block":
         return _respond(
@@ -84,6 +88,10 @@ def analyze_input(body: AnalyzeRequest, request: Request) -> AnalyzeResponse:
         )
 
     # Stage 5 — policy (only when the caller identifies an application)
+    # TRUST MODEL: application_id and user_id come from the calling service, not
+    # the end user. The REST API is a trusted internal sidecar — secure it at the
+    # network layer (mTLS, VPC policy, or a service mesh) and never expose it
+    # directly to external clients.
     sanitized = norm.text
     if app_id is not None:
         roles = ["default"]
@@ -111,7 +119,7 @@ def analyze_input(body: AnalyzeRequest, request: Request) -> AnalyzeResponse:
         if decision.verdict == "block":
             audit_log(
                 request_id, "policy", "block", hashed,
-                application_id=app_id,
+                application_id=app_id, user_id=user_id, session_id=session_id,
                 violations=decision.capability_violations + decision.topic_matches
                 + ([f"pii:{t}" for t in decision.pii_found] if decision.blocked_by == "pii" else []),
             )
@@ -121,7 +129,10 @@ def analyze_input(body: AnalyzeRequest, request: Request) -> AnalyzeResponse:
             )
         if decision.verdict == "review":
             verdict = "review"
-        audit_log(request_id, "policy", verdict, hashed, application_id=app_id)
+        audit_log(
+            request_id, "policy", verdict, hashed,
+            application_id=app_id, user_id=user_id, session_id=session_id,
+        )
 
     return _respond(
         request_id, verdict, pipeline, hashed, start,

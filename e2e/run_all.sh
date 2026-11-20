@@ -1,14 +1,26 @@
 #!/usr/bin/env bash
 # Run every e2e script in order against a running server.
 # Usage: ./run_all.sh            (defaults to http://localhost:8000)
-#        CITADEL_URL=http://host:port ./run_all.sh
-set -e
+#        SENTINEL_URL=http://host:port ./run_all.sh
+set -euo pipefail
 cd "$(dirname "$0")"
+
+PASS=0
+FAIL=0
 
 for script in [0-9][0-9]_*.sh; do
   echo
   echo "═══════════════════════════════════════════"
   echo "▶ $script"
   echo "═══════════════════════════════════════════"
-  bash "$script"
+  if bash "$script"; then
+    PASS=$((PASS + 1))
+  else
+    echo "✗ $script FAILED" >&2
+    FAIL=$((FAIL + 1))
+  fi
 done
+
+echo
+echo "Results: $PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ]
