@@ -47,6 +47,8 @@ def analyze_output(body: OutputAnalyzeRequest, request: Request) -> OutputAnalyz
     start = time.perf_counter()
     request_id = str(uuid.uuid4())
     app_id = body.context.application_id if body.context else None
+    user_id = body.context.user_id if body.context else None
+    session_id = body.context.session_id if body.context else None
     hashed = prompt_hash(body.output)
 
     pipeline = OutputPipelineDetail()
@@ -63,7 +65,8 @@ def analyze_output(body: OutputAnalyzeRequest, request: Request) -> OutputAnalyz
     if not rule_result.passed:
         audit_log(
             request_id, "output_rule_checks", "block", hashed,
-            application_id=app_id, violations=rule_result.violations,
+            application_id=app_id, user_id=user_id, session_id=session_id,
+            violations=rule_result.violations,
         )
         return _respond(
             request_id, "block", pipeline, hashed, start,
@@ -96,7 +99,7 @@ def analyze_output(body: OutputAnalyzeRequest, request: Request) -> OutputAnalyz
         if decision.verdict == "block":
             audit_log(
                 request_id, "output_policy", "block", hashed,
-                application_id=app_id,
+                application_id=app_id, user_id=user_id, session_id=session_id,
                 violations=decision.topic_matches
                 + ([f"pii:{t}" for t in decision.pii_found] if decision.blocked_by == "pii" else []),
             )
@@ -106,7 +109,10 @@ def analyze_output(body: OutputAnalyzeRequest, request: Request) -> OutputAnalyz
             )
         if decision.verdict == "review":
             verdict = "review"
-        audit_log(request_id, "output_policy", verdict, hashed, application_id=app_id)
+        audit_log(
+            request_id, "output_policy", verdict, hashed,
+            application_id=app_id, user_id=user_id, session_id=session_id,
+        )
 
     # Stage 5 — Llama Guard safety classifier, on the sanitized text.
     # When the application's policy declared PII handling, it owns privacy:
@@ -125,7 +131,8 @@ def analyze_output(body: OutputAnalyzeRequest, request: Request) -> OutputAnalyz
     if result.ran and result.safe is False:
         audit_log(
             request_id, "safety", "block", hashed,
-            application_id=app_id, violations=result.categories,
+            application_id=app_id, user_id=user_id, session_id=session_id,
+            violations=result.categories,
         )
         return _respond(
             request_id, "block", pipeline, hashed, start,
@@ -134,7 +141,10 @@ def analyze_output(body: OutputAnalyzeRequest, request: Request) -> OutputAnalyz
     # Fail safe: no safety verdict → never allow outright.
     if not result.ran:
         verdict = "review"
-    audit_log(request_id, "safety", verdict, hashed, application_id=app_id)
+    audit_log(
+        request_id, "safety", verdict, hashed,
+        application_id=app_id, user_id=user_id, session_id=session_id,
+    )
 
     return _respond(
         request_id, verdict, pipeline, hashed, start,

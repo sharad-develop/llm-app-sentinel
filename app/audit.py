@@ -24,6 +24,8 @@ def audit_log(
     verdict: str,
     hashed_prompt: str,
     application_id: str | None = None,
+    user_id: str | None = None,
+    session_id: str | None = None,
     risk_score: float | None = None,
     violations: list[str] | None = None,
 ) -> None:
@@ -36,6 +38,10 @@ def audit_log(
     }
     if application_id is not None:
         record["application_id"] = application_id
+    if user_id is not None:
+        record["user_id"] = user_id
+    if session_id is not None:
+        record["session_id"] = session_id
     if risk_score is not None:
         record["risk_score"] = risk_score
     if violations:

@@ -72,9 +72,9 @@ class OutputAnalyzeRequest(BaseModel):
     prompt: str | None = Field(default=None, max_length=settings.max_prompt_length)
     context: PromptContext | None = None
 
-    @field_validator("output")
+    @field_validator("output", "prompt")
     @classmethod
-    def no_control_chars(cls, v: str) -> str:
-        if _CONTROL_CHARS.search(v):
-            raise ValueError("output contains disallowed control characters")
+    def no_control_chars(cls, v: str | None) -> str | None:
+        if v is not None and _CONTROL_CHARS.search(v):
+            raise ValueError("field contains disallowed control characters")
         return v

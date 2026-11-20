@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Full request with optional context and custom thresholds.
 # Context ids show up in the server's audit log lines.
-BASE_URL="${CITADEL_URL:-http://localhost:8000}"
+# Expected: allow or review (clean prompt, context fields pass through).
+set -euo pipefail
+BASE_URL="${SENTINEL_URL:-http://localhost:8000}"
 
-curl -s -X POST "$BASE_URL/v1/input/analyze" \
+BODY=$(curl -sf -X POST "$BASE_URL/v1/input/analyze" \
   -H 'Content-Type: application/json' \
   -d '{
     "prompt": "Draft a polite reply to this customer email.",
@@ -15,4 +17,11 @@ curl -s -X POST "$BASE_URL/v1/input/analyze" \
     "options": {
       "thresholds": { "medium": 0.30, "high": 0.80 }
     }
-  }' | python3 -m json.tool
+  }')
+echo "$BODY" | python3 -m json.tool
+echo "$BODY" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+assert d['verdict'] in ('allow', 'review'), f'expected allow/review, got: {d[\"verdict\"]}'
+print('verdict assertion passed')
+"

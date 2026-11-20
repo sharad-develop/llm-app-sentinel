@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 from app.config import settings
 
-logger = logging.getLogger("prompt_citadel.pii")
+logger = logging.getLogger("llm_sentinel.pii")
 
 # Map model-specific entity groups to the canonical names used in policy
 # files. Unmapped groups pass through uppercased.
@@ -66,6 +66,11 @@ def _refine_span(text: str, start: int, end: int) -> tuple[int, int]:
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
+# Fallback: scan for email addresses the ML model may miss because its
+# tokenizer splits them (e.g. "alice" labelled GIVENNAME, "@example.com"
+# not labelled at all).
+_EMAIL_SCAN_RE = re.compile(r"\b[^\s@]+@[^\s@]+\.[^\s@]+\b")
+
 
 def _entity_type(group: str, span_text: str) -> str:
     """Canonical type for a refined span.
@@ -100,7 +105,7 @@ class PIIDetector:
 
     def load(self) -> None:
         if not self.enabled:
-            logger.info("PII detector disabled via CITADEL_DISABLE_PII")
+            logger.info("PII detector disabled via SENTINEL_DISABLE_PII")
             return
         try:
             self._pipeline = self._load_pipeline(self.model_name)
@@ -188,6 +193,17 @@ class PIIDetector:
                     end=end,
                 )
             )
+
+        # Regex fallback: add any email addresses not already covered by an
+        # ML span. The model tokenizer splits "alice@example.com" and may
+        # label only the local part, missing the full address entirely.
+        for m in _EMAIL_SCAN_RE.finditer(text):
+            if not any(e.start <= m.start() < e.end for e in entities):
+                entities.append(
+                    PIIEntity(type="EMAIL", text=m.group(), start=m.start(), end=m.end())
+                )
+
+        entities.sort(key=lambda e: e.start)
         return entities
 
 

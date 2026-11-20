@@ -1,6 +1,6 @@
 """Identity resolution — bring your own IAM.
 
-prompt-citadel does not manage users or roles. It resolves a `user_id`
+llm-sentinel does not manage users or roles. It resolves a `user_id`
 into roles via the IdentityProvider protocol; you supply an
 implementation backed by your IAM (Okta, Keycloak, Cognito, LDAP, ...)
 and register it in `app.main`:
@@ -29,7 +29,7 @@ import yaml
 
 from app.config import settings
 
-logger = logging.getLogger("prompt_citadel.identity")
+logger = logging.getLogger("llm_sentinel.identity")
 
 DEFAULT_ROLE = "default"
 
