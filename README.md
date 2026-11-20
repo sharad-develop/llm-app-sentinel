@@ -477,6 +477,11 @@ All values can be set in `.env` (prefix `SENTINEL_`) or as environment variables
 | Variable | Default | Effect |
 |----------|---------|--------|
 | `SENTINEL_MAX_PROMPT_LENGTH` | `8192` | Maximum prompt length in characters |
+| `SENTINEL_MAX_REQUEST_BYTES` | `1048576` | Max REST body size; larger → `413`, missing `Content-Length` → `411` |
+| `SENTINEL_RATE_LIMIT_REQUESTS` | `0` (off) | Max calls per window per caller (key: `user_id`, else `application_id`, else client IP). Exceeded → REST `429` + `Retry-After`; SDK raises `RateLimitExceeded`. Per-process counters. |
+| `SENTINEL_RATE_LIMIT_WINDOW_SECONDS` | `60` | Rate-limit window |
+| `SENTINEL_RATE_LIMIT_MAX_KEYS` | `10000` | Max tracked callers; when full of live keys, new callers are rejected (fail closed) |
+| `SENTINEL_CLASSIFIER_MAX_CHUNKS` | `8` | Max 512-token chunks scored per prompt; longer prompts skip the classifier and return `review` |
 | `SENTINEL_CONTROL_CHARS_PATTERN` | `\x00-\x08…` | Control chars that reject the request |
 | `SENTINEL_RULES_FILE` | `default.yaml` | Input rule pack filename (resolved inside `app/rules/` package directory) |
 | `SENTINEL_CLASSIFIER_MODEL` | `meta-llama/Llama-Prompt-Guard-2-86M` | Classifier model id or local path |

@@ -4,6 +4,7 @@ import uuid
 
 from fastapi import APIRouter, Request
 
+from app.ratelimit import rate_limit_key
 from app.audit import audit_log, prompt_hash, utc_now
 from app.models.request import AnalyzeRequest
 from app.models.response import (
@@ -28,6 +29,10 @@ def analyze_input(body: AnalyzeRequest, request: Request) -> AnalyzeResponse:
     app_id = body.context.application_id if body.context else None
     user_id = body.context.user_id if body.context else None
     session_id = body.context.session_id if body.context else None
+    # Before any expensive stage (LLM10). Raises RateLimitExceeded -> HTTP 429.
+    request.app.state.rate_limiter.check(rate_limit_key(
+        user_id, app_id, f"ip:{request.client.host if request.client else 'unknown'}"
+    ))
     hashed = prompt_hash(body.prompt)
 
     pipeline = PipelineDetail()

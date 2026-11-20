@@ -19,6 +19,7 @@ from app.api.v1.input import router as input_router
 from app.api.v1.output import router as output_router
 from app.config import settings
 from app.identity import StaticIdentityProvider
+from app.ratelimit import RateLimiter, RateLimitExceeded
 from app.pipeline.classifier import PromptGuardClassifier
 from app.pipeline.pii import PIIDetector
 from app.pipeline.policy import PolicyEngine
@@ -40,6 +41,7 @@ async def lifespan(app: FastAPI):
             "SENTINEL_API_KEY is not set — the REST API accepts requests from any caller. "
             "Set SENTINEL_API_KEY or restrict access via mTLS / network policy."
         )
+    app.state.rate_limiter = RateLimiter()
     app.state.rule_engine = RuleEngine()
     app.state.classifier = PromptGuardClassifier()
     app.state.classifier.load()
@@ -79,6 +81,33 @@ async def api_key_middleware(request: Request, call_next) -> Response:
         if not secrets.compare_digest(token, settings.api_key):
             return JSONResponse(status_code=403, content={"detail": "Invalid API key"})
     return await call_next(request)
+
+
+@app.middleware("http")
+async def body_size_middleware(request: Request, call_next) -> Response:
+    """Reject oversized request bodies before they are read or parsed (LLM10).
+
+    Bodies must declare Content-Length so the limit can be enforced up front.
+    """
+    if request.method in ("POST", "PUT", "PATCH"):
+        length = request.headers.get("content-length")
+        if length is None:
+            return JSONResponse(status_code=411, content={"detail": "Content-Length required"})
+        if not length.isdigit() or int(length) > settings.max_request_bytes:
+            return JSONResponse(
+                status_code=413,
+                content={"detail": f"Request body exceeds {settings.max_request_bytes} bytes"},
+            )
+    return await call_next(request)
+
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded) -> Response:
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "Rate limit exceeded"},
+        headers={"Retry-After": str(exc.retry_after)},
+    )
 
 
 app.include_router(input_router, prefix="/v1")

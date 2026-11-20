@@ -37,6 +37,17 @@ class Settings(BaseSettings):
     # plus DEL (0x7f).
     control_chars_pattern: str = r"\x00-\x08\x0b\x0c\x0e-\x1f\x7f"
 
+    # --- resource limits (OWASP LLM10: unbounded consumption) ---
+    # Reject REST bodies larger than this before parsing (bytes).
+    max_request_bytes: int = 1_048_576
+    # Per-caller request budget: at most `rate_limit_requests` calls per
+    # `rate_limit_window_seconds`, keyed by user_id, else application_id, else
+    # client address. 0 disables rate limiting.
+    rate_limit_requests: int = 0
+    rate_limit_window_seconds: float = 60.0
+    # Cap on distinct rate-limit keys tracked in memory.
+    rate_limit_max_keys: int = 10_000
+
     # --- normalization ---
     # Full regex pattern for invisible / zero-width characters to strip.
     # Covers U+200B-U+200F (zero-width/LRM/RLM), U+2028-U+2029 (line/para
@@ -69,6 +80,9 @@ class Settings(BaseSettings):
     classifier_threshold_high: float = 0.90
     # Device for classifier: auto (cuda→mps→cpu), or explicit (cuda/mps/cpu).
     classifier_device: str = "auto"
+    # Max 512-token chunks scored per prompt. Longer prompts are not scored
+    # (fail-safe: verdict `review`) rather than silently truncated.
+    classifier_max_chunks: int = 8
 
     # --- output guard ---
     # Maximum model-output length in characters.
@@ -113,6 +127,27 @@ class Settings(BaseSettings):
     def positive_length(cls, v: int) -> int:
         if v < 1:
             raise ValueError("max_prompt_length must be >= 1")
+        return v
+
+    @field_validator("max_request_bytes", "classifier_max_chunks", "rate_limit_max_keys")
+    @classmethod
+    def positive_int(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("value must be >= 1")
+        return v
+
+    @field_validator("rate_limit_requests")
+    @classmethod
+    def non_negative(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("rate_limit_requests must be >= 0")
+        return v
+
+    @field_validator("rate_limit_window_seconds")
+    @classmethod
+    def positive_window(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("rate_limit_window_seconds must be > 0")
         return v
 
     @field_validator("classifier_threshold_high")

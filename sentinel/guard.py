@@ -24,6 +24,7 @@ from pathlib import Path
 
 from app.audit import audit_log, prompt_hash
 from app.config import settings
+from app.ratelimit import RateLimiter, RateLimitExceeded, rate_limit_key
 
 # Compiled once at import time — mirrors app/models/request.py.
 _CONTROL_CHARS = re.compile(f"[{settings.control_chars_pattern}]")
@@ -114,6 +115,11 @@ class Guard:
         identity_provider: Custom IAM implementation of the
             ``IdentityProvider`` protocol. Defaults to
             ``StaticIdentityProvider`` (reads identities.yaml).
+        rate_limit: Max check_input/check_output calls per caller per window
+            (caller = user_id, else application_id). 0 disables. Defaults to
+            ``SENTINEL_RATE_LIMIT_REQUESTS``. Counters are per Guard instance.
+        rate_limit_window: Window in seconds. Defaults to
+            ``SENTINEL_RATE_LIMIT_WINDOW_SECONDS``.
     """
 
     def __init__(
@@ -121,9 +127,12 @@ class Guard:
         *,
         policy_dir: str | Path | None = None,
         identity_provider=None,
+        rate_limit: int | None = None,
+        rate_limit_window: float | None = None,
     ) -> None:
         self._policy_dir = Path(policy_dir) if policy_dir else None
         self._identity_provider_override = identity_provider
+        self._rate_limiter = RateLimiter(limit=rate_limit, window=rate_limit_window)
         self._load_lock = threading.Lock()
         self._loaded = False
 
@@ -187,11 +196,16 @@ class Guard:
             threshold_high: Classifier score at which verdict becomes ``block``.
             raise_on_block: Raise ``PromptBlocked`` instead of returning the result.
 
+        Raises:
+            ValueError: Prompt is empty, too long, or has control characters.
+            RateLimitExceeded: The caller exceeded ``SENTINEL_RATE_LIMIT_REQUESTS``.
+
         Returns:
             ``AnalyzeResponse`` with ``verdict``, ``sanitized_prompt``, and
             full ``pipeline`` detail.
         """
         _validate_prompt_text(prompt)
+        self._rate_limiter.check(rate_limit_key(user_id, application_id, "sdk"))
         t_medium = threshold_medium if threshold_medium is not None else settings.classifier_threshold_medium
         t_high = threshold_high if threshold_high is not None else settings.classifier_threshold_high
         _validate_thresholds(t_medium, t_high)
@@ -335,6 +349,7 @@ class Guard:
             ``safety_categories``, and full ``pipeline`` detail.
         """
         _validate_output_text(output)
+        self._rate_limiter.check(rate_limit_key(user_id, application_id, "sdk"))
 
         self._ensure_loaded()
         start = time.perf_counter()

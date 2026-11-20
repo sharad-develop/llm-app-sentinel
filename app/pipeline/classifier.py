@@ -150,6 +150,15 @@ class PromptGuardClassifier:
             stride=_CHUNK_STRIDE,
             return_overflowing_tokens=True,
         )
+        # Bound compute: refuse to score unbounded chunk counts. Not scoring is
+        # fail-safe (caller maps ran=False to `review`), unlike truncating,
+        # which would let an attacker hide a payload past the cutoff.
+        n_chunks = encoded["input_ids"].shape[0]
+        if n_chunks > settings.classifier_max_chunks:
+            return ClassifierScore(
+                ran=False,
+                note=f"input_too_long: {n_chunks} chunks > {settings.classifier_max_chunks}",
+            )
         input_ids = encoded["input_ids"].to(self._device)
         attention_mask = encoded["attention_mask"].to(self._device)
 
