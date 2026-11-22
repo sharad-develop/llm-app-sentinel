@@ -77,12 +77,22 @@ class SafetyStageResult(BaseModel):
     note: str | None = None
 
 
+class LeakageStageResult(BaseModel):
+    ran: bool
+    violations: list[str] = []
+    # Fraction of system-prompt n-grams reproduced in the response.
+    # Best embedding similarity (only when the semantic check ran).
+    semantic_similarity: float | None = None
+    note: str | None = None
+
+
 class OutputPipelineDetail(BaseModel):
     # Field order mirrors execution order: policy (redaction) runs before
     # the safety classifier so Llama Guard judges the sanitized text.
     schema_validation: SchemaStageResult = SchemaStageResult()
     normalization: NormalizationStageResult = NormalizationStageResult()
     rule_checks: RuleChecksStageResult | None = None
+    leakage: LeakageStageResult | None = None
     policy: PolicyStageResult | None = None
     safety: SafetyStageResult | None = None
 
@@ -90,7 +100,7 @@ class OutputPipelineDetail(BaseModel):
 class OutputAnalyzeResponse(BaseModel):
     request_id: str
     verdict: Verdict
-    blocked_at: Literal["rule_checks", "safety", "policy"] | None = None
+    blocked_at: Literal["rule_checks", "leakage", "safety", "policy"] | None = None
     safety_categories: list[str] = []
     sanitized_output: str | None = None
     output_hash: str

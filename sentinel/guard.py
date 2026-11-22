@@ -59,6 +59,7 @@ from app.identity import StaticIdentityProvider
 from app.models.response import (
     AnalyzeResponse,
     ClassifierStageResult,
+    LeakageStageResult,
     NormalizationStageResult,
     OutputAnalyzeResponse,
     OutputPipelineDetail,
@@ -70,6 +71,8 @@ from app.models.response import (
     SafetyStageResult,
 )
 from app.pipeline.classifier import PromptGuardClassifier
+from app.pipeline.leakage import new_canary, run_leak_checks, validate_leak_inputs, with_canary
+from app.pipeline.semantic_leak import SemanticLeakDetector
 from app.pipeline.normalization import normalize
 from app.pipeline.pii import PIIDetector
 from app.pipeline.policy import PolicyEngine
@@ -132,6 +135,7 @@ class Guard:
     ) -> None:
         self._policy_dir = Path(policy_dir) if policy_dir else None
         self._identity_provider_override = identity_provider
+        self._semantic_leak = SemanticLeakDetector()  # lazy: loads on first use
         self._rate_limiter = RateLimiter(limit=rate_limit, window=rate_limit_window)
         self._load_lock = threading.Lock()
         self._loaded = False
@@ -334,6 +338,9 @@ class Guard:
         application_id: str | None = None,
         user_id: str | None = None,
         session_id: str | None = None,
+        system_prompt: str | None = None,
+        canaries: list[str] | None = None,
+        semantic_leak: bool | None = None,
         raise_on_block: bool = False,
     ) -> OutputAnalyzeResponse:
         """Run the output guard pipeline and return the full result.
@@ -342,6 +349,17 @@ class Guard:
             output: The model response to vet.
             prompt: The original user prompt (improves Llama Guard accuracy).
             application_id: Enables per-application policy evaluation.
+            system_prompt: Your real system prompt. When given, a response that
+                reproduces it (verbatim, paraphrased or translated) is blocked at
+                ``leakage`` (OWASP LLM07). Used by the semantic check only —
+                see ``semantic_leak``. Never logged or returned.
+            canaries: Canary tokens planted in the system prompt (see
+                ``Guard.with_canary``). Any appearance in the response blocks.
+            semantic_leak: Embedding-similarity comparison with ``system_prompt``
+                (catches paraphrase/translation). ``None`` follows
+                ``SENTINEL_DISABLE_SEMANTIC_LEAK``; ``False`` turns it off for this
+                call, ``True`` forces it on. Needs ``system_prompt``. If it can't
+                run (model unavailable) the verdict is ``review``.
             raise_on_block: Raise ``OutputBlocked`` instead of returning the result.
 
         Returns:
@@ -349,6 +367,7 @@ class Guard:
             ``safety_categories``, and full ``pipeline`` detail.
         """
         _validate_output_text(output)
+        validate_leak_inputs(system_prompt, canaries)
         self._rate_limiter.check(rate_limit_key(user_id, application_id, "sdk"))
 
         self._ensure_loaded()
@@ -377,7 +396,30 @@ class Guard:
                 raise OutputBlocked(result)
             return result
 
-        verdict = "allow"
+        leak = run_leak_checks(
+            norm.text, system_prompt, canaries,
+            detector=self._semantic_leak, semantic=semantic_leak,
+        )
+        if leak.ran:
+            pipeline.leakage = LeakageStageResult(
+                ran=True, violations=leak.violations,
+                semantic_similarity=leak.semantic_similarity, note=leak.note,
+            )
+            if leak.leaked:
+                audit_log(
+                    request_id, "output_leakage", "block", hashed,
+                    application_id=application_id, user_id=user_id,
+                    session_id=session_id, violations=leak.violations,
+                )
+                result = _output_response(
+                    request_id, "block", pipeline, hashed, start, blocked_at="leakage"
+                )
+                if raise_on_block:
+                    raise OutputBlocked(result)
+                return result
+
+        # Fail safe: semantic check was wanted but couldn't run.
+        verdict = "review" if leak.needs_review else "allow"
         sanitized = norm.text
         pii_handled = False
         if application_id is not None:
@@ -462,6 +504,24 @@ class Guard:
         return _output_response(
             request_id, verdict, pipeline, hashed, start, sanitized_output=sanitized
         )
+
+    # ------------------------------------------------------------------
+    # System-prompt leakage helpers (OWASP LLM07)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def new_canary() -> str:
+        """Return a fresh canary token to embed in your system prompt."""
+        return new_canary()
+
+    @staticmethod
+    def with_canary(system_prompt: str) -> tuple[str, str]:
+        """Append a canary to ``system_prompt``; returns ``(prompt, canary)``.
+
+        Send ``prompt`` to your LLM and pass ``canaries=[canary]`` to
+        ``check_output``.
+        """
+        return with_canary(system_prompt)
 
     # ------------------------------------------------------------------
     # Internal

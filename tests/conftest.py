@@ -10,3 +10,4 @@ import os
 os.environ.setdefault("SENTINEL_DISABLE_CLASSIFIER", "true")
 os.environ.setdefault("SENTINEL_DISABLE_PII", "true")
 os.environ.setdefault("SENTINEL_DISABLE_SAFETY", "true")
+os.environ.setdefault("SENTINEL_DISABLE_SEMANTIC_LEAK", "true")

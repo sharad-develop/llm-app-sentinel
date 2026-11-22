@@ -24,6 +24,7 @@ from app.pipeline.classifier import PromptGuardClassifier
 from app.pipeline.pii import PIIDetector
 from app.pipeline.policy import PolicyEngine
 from app.pipeline.rules import RuleEngine
+from app.pipeline.semantic_leak import SemanticLeakDetector
 from app.pipeline.safety import LlamaGuardClassifier
 
 logging.basicConfig(level=logging.INFO)
@@ -42,6 +43,8 @@ async def lifespan(app: FastAPI):
             "Set SENTINEL_API_KEY or restrict access via mTLS / network policy."
         )
     app.state.rate_limiter = RateLimiter()
+    # Lazy: the embedding model loads on first use that supplies a system prompt.
+    app.state.semantic_leak = SemanticLeakDetector()
     app.state.rule_engine = RuleEngine()
     app.state.classifier = PromptGuardClassifier()
     app.state.classifier.load()

@@ -5,6 +5,7 @@ Vets a MODEL response before it is returned to the end user:
   1. schema validation   (Pydantic — length, control chars, unknown fields)
   2. normalization       (same canonicalization as the input pipeline)
   3. rule checks         (rules/output.yaml — prompt leakage, secrets)
+     leakage check       (optional: real system prompt / canary tokens)
   4. policy              (topics + PII per application; no capabilities)
   5. safety classifier   (Llama Guard 3 — safe/unsafe + hazard categories)
 
@@ -25,6 +26,7 @@ from app.ratelimit import rate_limit_key
 from app.audit import audit_log, prompt_hash, utc_now
 from app.models.request import OutputAnalyzeRequest
 from app.models.response import (
+    LeakageStageResult,
     NormalizationStageResult,
     OutputAnalyzeResponse,
     OutputPipelineDetail,
@@ -34,6 +36,7 @@ from app.models.response import (
     RuleChecksStageResult,
     SafetyStageResult,
 )
+from app.pipeline.leakage import run_leak_checks
 from app.pipeline.normalization import normalize
 
 router = APIRouter()
@@ -78,10 +81,33 @@ def analyze_output(body: OutputAnalyzeRequest, request: Request) -> OutputAnalyz
             blocked_at="rule_checks",
         )
 
+    # Stage 3b — system-prompt leakage (LLM07); runs only when the caller
+    # supplies the system prompt and/or canaries.
+    leak = run_leak_checks(
+        norm.text, body.system_prompt, body.canaries,
+        detector=request.app.state.semantic_leak, semantic=body.semantic_leak,
+    )
+    if leak.ran:
+        pipeline.leakage = LeakageStageResult(
+            ran=True, violations=leak.violations,
+            semantic_similarity=leak.semantic_similarity, note=leak.note,
+        )
+        if leak.leaked:
+            audit_log(
+                request_id, "output_leakage", "block", hashed,
+                application_id=app_id, user_id=user_id, session_id=session_id,
+                violations=leak.violations,
+            )
+            return _respond(
+                request_id, "block", pipeline, hashed, start,
+                blocked_at="leakage",
+            )
+
     # Stage 4 — policy (topics + PII; only when the caller identifies an app).
     # Runs before the safety classifier so PII the policy redacts doesn't
     # trip Llama Guard's privacy category on text that won't be shown.
-    verdict = "allow"
+    # Fail safe: semantic check was wanted but couldn't run → never allow outright.
+    verdict = "review" if leak.needs_review else "allow"
     sanitized = norm.text
     pii_handled_by_policy = False
     if app_id is not None:

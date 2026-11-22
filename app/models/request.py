@@ -8,6 +8,7 @@ import re
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.config import settings
+from app.pipeline.leakage import validate_canary
 
 # Compiled once at import time from the config value.
 _CONTROL_CHARS = re.compile(f"[{settings.control_chars_pattern}]")
@@ -71,6 +72,20 @@ class OutputAnalyzeRequest(BaseModel):
     output: str = Field(min_length=1, max_length=settings.max_output_length)
     prompt: str | None = Field(default=None, max_length=settings.max_prompt_length)
     context: PromptContext | None = None
+    # LLM07: the real system prompt and/or canary tokens planted in it. When
+    # supplied, the response is checked for leaking either.
+    system_prompt: str | None = Field(default=None, max_length=settings.max_system_prompt_length)
+    canaries: list[str] = Field(default_factory=list, max_length=settings.max_canaries)
+    # Semantic (embedding) comparison with the system prompt. null = server
+    # default (SENTINEL_DISABLE_SEMANTIC_LEAK); true/false overrides per call.
+    semantic_leak: bool | None = None
+
+    @field_validator("canaries")
+    @classmethod
+    def valid_canaries(cls, v: list[str]) -> list[str]:
+        for c in v:
+            validate_canary(c)
+        return v
 
     @field_validator("output", "prompt")
     @classmethod

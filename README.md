@@ -218,15 +218,42 @@ out = guard.check_output(
     llm_response,
     prompt=original_prompt,          # improves Llama Guard accuracy
     application_id="support-bot",
+    system_prompt=SYSTEM_PROMPT,     # optional: block responses that leak it (LLM07)
+    canaries=[canary],               # optional: block responses containing a canary
     raise_on_block=False,
 )
 
 out.verdict           # "allow" | "review" | "block"
 out.sanitized_output  # normalized + PII-redacted text (None when blocked)
-out.blocked_at        # "rule_checks" | "policy" | "safety" | None
+out.blocked_at        # "rule_checks" | "leakage" | "policy" | "safety" | None
 out.safety_categories # hazard categories that caused a block, e.g. ["violent_crimes"]
 out.pipeline          # full per-stage detail
 ```
+
+#### System-prompt leakage (OWASP LLM07)
+
+Two optional, deterministic checks. Neither the prompt nor the canary is ever logged or returned.
+
+```python
+# 1. Canary: plant a random marker in the system prompt. It has no legitimate
+#    reason to appear in a response, so any appearance means extraction.
+system_prompt, canary = Guard.with_canary("You are SupportBot. ...")
+reply = my_llm(system_prompt, user_prompt)
+out = guard.check_output(reply, canaries=[canary])   # blocked_at == "leakage"
+
+# 2. Semantic similarity with the real system prompt (see below) — on by
+#    default when system_prompt is given.
+out = guard.check_output(reply, system_prompt=system_prompt)
+out = guard.check_output(reply, system_prompt=system_prompt, semantic_leak=False)  # off for this call
+```
+
+**Semantic similarity (optional).** When `system_prompt` is supplied and no canary fired, the prompt and response are split into sentences, embedded with a sentence-embedding model, and compared by cosine similarity. A response sentence at or above `SENTINEL_SEMANTIC_LEAK_THRESHOLD` (default `0.80`) blocks with `system_prompt_semantic` — this catches verbatim dumps, paraphrases and, with the default multilingual model, translations. **Not detected:** re-encoding (base64, ROT13, one character per line) of the prompt, unless a canary survives it — use as one layer. `system_prompt` is used only by this check, so with it turned off only canaries protect you.
+
+- **Turn it off:** globally with `SENTINEL_DISABLE_SEMANTIC_LEAK=true`, or per call with `semantic_leak=False` (REST: `"semantic_leak": false`). `semantic_leak=True` forces it on when globally disabled.
+- **Lazy:** the model loads on the first call that supplies a system prompt, never at startup, and never when no system prompt is passed. It needs the `ml` extra (`pip install .[ml]`); the first use downloads about 470 MB.
+- **Fail-safe:** if it is enabled but the model can't load (or the text exceeds `SENTINEL_SEMANTIC_LEAK_MAX_SEGMENTS`), the verdict is `review`, not `allow`. Turn it off if you'd rather skip silently.
+- **Tuning:** a reply that legitimately mentions a rule ("I can't help with refunds that large") can score near the rule. Raise the threshold if you see false positives, and watch `pipeline.leakage.semantic_similarity` (returned even when it passes) to choose a value.
+- **Privacy:** only sentence embeddings, keyed by a hash of the prompt, are cached in memory; the prompt text is not retained.
 
 ### Exceptions
 
@@ -343,7 +370,7 @@ pii:
 
 | Threat | Caught by |
 |--------|-----------|
-| Model discloses its system prompt / hidden instructions | Output rule pack (`leak_patterns`) |
+| Model discloses its system prompt / hidden instructions | Output rule pack (`leak_patterns`); optional canary + semantic system-prompt check (`leakage`) |
 | Credentials or API keys in a response | Output rule pack (`secret_patterns`) |
 | Raw chat-template tokens leaking into output | Output rule pack (`leak_patterns`) |
 | Harmful content (violence, CSAM, weapons, self-harm, …) | Llama Guard 3-1B (14 hazard categories) |
@@ -358,6 +385,10 @@ pii:
 |----------|----------|
 | `leak_patterns` | `system_prompt_disclosure`, `instruction_recital`, `chat_template_tokens` |
 | `secret_patterns` | Same key formats as the input pack |
+
+### Stage 2b — Leakage check (optional)
+
+Runs after rule checks when the caller supplies `system_prompt` and/or `canaries` (SDK arguments, or fields on `POST /v1/output/analyze`). Blocks with `blocked_at: "leakage"` and violations `canary_leaked` or `system_prompt_semantic`. See [System-prompt leakage](#system-prompt-leakage-owasp-llm07).
 
 ### Stage 3 — Policy (output)
 
@@ -506,6 +537,14 @@ All values can be set in `.env` (prefix `SENTINEL_`) or as environment variables
 |----------|---------|--------|
 | `SENTINEL_MAX_OUTPUT_LENGTH` | `16384` | Maximum output length in characters |
 | `SENTINEL_OUTPUT_RULES_FILE` | `output.yaml` | Output rule pack filename (resolved inside `app/rules/` package directory) |
+| `SENTINEL_DISABLE_SEMANTIC_LEAK` | `false` | Turn off the embedding-similarity leak check (overridable per call with `semantic_leak`) |
+| `SENTINEL_SEMANTIC_LEAK_MODEL` | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` | Sentence-embedding model id or local path |
+| `SENTINEL_SEMANTIC_LEAK_THRESHOLD` | `0.80` | Cosine similarity at which a response sentence counts as restating the prompt |
+| `SENTINEL_SEMANTIC_LEAK_MIN_WORDS` | `4` | Sentences shorter than this are ignored |
+| `SENTINEL_SEMANTIC_LEAK_MAX_SEGMENTS` | `256` | Max sentences per side; beyond this the stage skips and the verdict is `review` |
+| `SENTINEL_SEMANTIC_LEAK_DEVICE` | `auto` | Device: `auto` (cuda→mps→cpu) or explicit |
+| `SENTINEL_MAX_SYSTEM_PROMPT_LENGTH` | `32768` | Max `system_prompt` characters accepted for leak checks |
+| `SENTINEL_MAX_CANARIES` | `16` | Max canaries per call |
 | `SENTINEL_SAFETY_MODEL` | `meta-llama/Llama-Guard-3-1B` | Llama Guard model id or local path |
 | `SENTINEL_SAFETY_DEVICE` | `auto` | Device: `auto` (cuda→mps→cpu) or explicit |
 | `SENTINEL_DISABLE_SAFETY` | `false` | Skip the safety classifier entirely |

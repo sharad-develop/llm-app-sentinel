@@ -84,6 +84,22 @@ class Settings(BaseSettings):
     # (fail-safe: verdict `review`) rather than silently truncated.
     classifier_max_chunks: int = 8
 
+    # --- system-prompt leakage (OWASP LLM07) ---
+    # Optional semantic (embedding) comparison: catches paraphrase/translation.
+    # Runs only when a system prompt is supplied; model loads lazily.
+    disable_semantic_leak: bool = False
+    semantic_leak_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    semantic_leak_device: str = "auto"
+    # Cosine similarity at which a response sentence counts as restating a
+    # system-prompt sentence.
+    semantic_leak_threshold: float = 0.80
+    # Sentences shorter than this (in words) are ignored on both sides.
+    semantic_leak_min_words: int = 4
+    # Max segments per side; beyond it the stage skips (verdict `review`).
+    semantic_leak_max_segments: int = 256
+    max_system_prompt_length: int = 32768
+    max_canaries: int = 16
+
     # --- output guard ---
     # Maximum model-output length in characters.
     max_output_length: int = 16384
@@ -148,6 +164,27 @@ class Settings(BaseSettings):
     def positive_window(cls, v: float) -> float:
         if v <= 0:
             raise ValueError("rate_limit_window_seconds must be > 0")
+        return v
+
+    @field_validator("max_system_prompt_length", "max_canaries")
+    @classmethod
+    def leak_positive(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("value must be >= 1")
+        return v
+
+    @field_validator("semantic_leak_threshold")
+    @classmethod
+    def semantic_fraction(cls, v: float) -> float:
+        if not 0.0 < v <= 1.0:
+            raise ValueError("semantic_leak_threshold must be in (0, 1]")
+        return v
+
+    @field_validator("semantic_leak_min_words", "semantic_leak_max_segments")
+    @classmethod
+    def semantic_positive(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("value must be >= 1")
         return v
 
     @field_validator("classifier_threshold_high")
