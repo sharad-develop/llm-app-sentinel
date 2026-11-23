@@ -62,6 +62,7 @@ from app.models.response import (
     LeakageStageResult,
     NormalizationStageResult,
     OutputAnalyzeResponse,
+    OutputHandlingStageResult,
     OutputPipelineDetail,
     PIIPolicyResult,
     PipelineDetail,
@@ -71,6 +72,7 @@ from app.models.response import (
     SafetyStageResult,
 )
 from app.pipeline.classifier import PromptGuardClassifier
+from app.pipeline.output_handling import handle_output
 from app.pipeline.leakage import new_canary, run_leak_checks, validate_leak_inputs, with_canary
 from app.pipeline.semantic_leak import SemanticLeakDetector
 from app.pipeline.normalization import normalize
@@ -418,14 +420,41 @@ class Guard:
                     raise OutputBlocked(result)
                 return result
 
-        # Fail safe: semantic check was wanted but couldn't run.
-        verdict = "review" if leak.needs_review else "allow"
-        sanitized = norm.text
+        # OWASP LLM05: neutralize exfiltration images/links and unsafe HTML per
+        # policy; later stages judge the neutralized text.
+        handled_text = norm.text
+        output_review = False
+        if not settings.disable_output_handling:
+            oh = handle_output(norm.text, self._policy_engine.output_policy(application_id))
+            pipeline.output_handling = OutputHandlingStageResult(
+                ran=True, findings=oh.findings, actions=oh.actions,
+                sql_indicators=oh.sql_indicators, note=oh.note,
+            )
+            if oh.blocked:
+                audit_log(
+                    request_id, "output_handling", "block", hashed,
+                    application_id=application_id, user_id=user_id,
+                    session_id=session_id, violations=oh.findings,
+                )
+                result = _output_response(
+                    request_id, "block", pipeline, hashed, start,
+                    blocked_at="output_handling",
+                )
+                if raise_on_block:
+                    raise OutputBlocked(result)
+                return result
+            handled_text = oh.text
+            output_review = oh.review
+
+        # Fail safe: semantic check was wanted but couldn't run, or a SQL
+        # indicator was flagged.
+        verdict = "review" if (leak.needs_review or output_review) else "allow"
+        sanitized = handled_text
         pii_handled = False
         if application_id is not None:
             decision = self._policy_engine.evaluate_output(
                 application_id=application_id,
-                text=norm.text,
+                text=handled_text,
                 pii_detector=self._pii,
             )
             pipeline.policy = PolicyStageResult(

@@ -86,6 +86,17 @@ class LeakageStageResult(BaseModel):
     note: str | None = None
 
 
+class OutputHandlingStageResult(BaseModel):
+    ran: bool
+    # Constructs found: "image", "link", "html".
+    findings: list[str] = []
+    # What was done about them, e.g. "strip_image", "sanitize_html".
+    actions: list[str] = []
+    # SQL-injection indicator ids, e.g. "sql_destructive" (policy `sql` != allow).
+    sql_indicators: list[str] = []
+    note: str | None = None
+
+
 class OutputPipelineDetail(BaseModel):
     # Field order mirrors execution order: policy (redaction) runs before
     # the safety classifier so Llama Guard judges the sanitized text.
@@ -93,6 +104,7 @@ class OutputPipelineDetail(BaseModel):
     normalization: NormalizationStageResult = NormalizationStageResult()
     rule_checks: RuleChecksStageResult | None = None
     leakage: LeakageStageResult | None = None
+    output_handling: OutputHandlingStageResult | None = None
     policy: PolicyStageResult | None = None
     safety: SafetyStageResult | None = None
 
@@ -100,7 +112,7 @@ class OutputPipelineDetail(BaseModel):
 class OutputAnalyzeResponse(BaseModel):
     request_id: str
     verdict: Verdict
-    blocked_at: Literal["rule_checks", "leakage", "safety", "policy"] | None = None
+    blocked_at: Literal["rule_checks", "leakage", "output_handling", "safety", "policy"] | None = None
     safety_categories: list[str] = []
     sanitized_output: str | None = None
     output_hash: str

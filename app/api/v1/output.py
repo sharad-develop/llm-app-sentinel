@@ -6,6 +6,7 @@ Vets a MODEL response before it is returned to the end user:
   2. normalization       (same canonicalization as the input pipeline)
   3. rule checks         (rules/output.yaml — prompt leakage, secrets)
      leakage check       (optional: real system prompt / canary tokens)
+     output handling     (images / links / HTML neutralized per policy)
   4. policy              (topics + PII per application; no capabilities)
   5. safety classifier   (Llama Guard 3 — safe/unsafe + hazard categories)
 
@@ -29,6 +30,7 @@ from app.models.response import (
     LeakageStageResult,
     NormalizationStageResult,
     OutputAnalyzeResponse,
+    OutputHandlingStageResult,
     OutputPipelineDetail,
     PIIPolicyResult,
     PolicyStageResult,
@@ -36,7 +38,9 @@ from app.models.response import (
     RuleChecksStageResult,
     SafetyStageResult,
 )
+from app.config import settings
 from app.pipeline.leakage import run_leak_checks
+from app.pipeline.output_handling import handle_output
 from app.pipeline.normalization import normalize
 
 router = APIRouter()
@@ -106,14 +110,41 @@ def analyze_output(body: OutputAnalyzeRequest, request: Request) -> OutputAnalyz
     # Stage 4 — policy (topics + PII; only when the caller identifies an app).
     # Runs before the safety classifier so PII the policy redacts doesn't
     # trip Llama Guard's privacy category on text that won't be shown.
-    # Fail safe: semantic check was wanted but couldn't run → never allow outright.
-    verdict = "review" if leak.needs_review else "allow"
-    sanitized = norm.text
+    # Stage 3c — improper output handling (LLM05): neutralize exfiltration
+    # images/links and unsafe HTML per the app's policy. Later stages judge
+    # the neutralized text, i.e. what would actually be shown.
+    handled_text = norm.text
+    output_review = False
+    if not settings.disable_output_handling:
+        oh = handle_output(
+            norm.text, request.app.state.policy_engine.output_policy(app_id)
+        )
+        pipeline.output_handling = OutputHandlingStageResult(
+            ran=True, findings=oh.findings, actions=oh.actions,
+            sql_indicators=oh.sql_indicators, note=oh.note,
+        )
+        if oh.blocked:
+            audit_log(
+                request_id, "output_handling", "block", hashed,
+                application_id=app_id, user_id=user_id, session_id=session_id,
+                violations=oh.findings,
+            )
+            return _respond(
+                request_id, "block", pipeline, hashed, start,
+                blocked_at="output_handling",
+            )
+        handled_text = oh.text
+        output_review = oh.review
+
+    # Fail safe: semantic check was wanted but couldn't run, or a SQL indicator
+    # was flagged → never allow outright.
+    verdict = "review" if (leak.needs_review or output_review) else "allow"
+    sanitized = handled_text
     pii_handled_by_policy = False
     if app_id is not None:
         decision = request.app.state.policy_engine.evaluate_output(
             application_id=app_id,
-            text=norm.text,
+            text=handled_text,
             pii_detector=request.app.state.pii_detector,
         )
         pipeline.policy = PolicyStageResult(

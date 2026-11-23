@@ -19,6 +19,7 @@ from pathlib import Path
 import yaml
 
 from app.config import settings
+from app.pipeline.output_handling import OutputHandlingPolicy, validate_section
 from app.pipeline.pii import PIIDetector, redact
 
 logger = logging.getLogger("llm_sentinel.policy")
@@ -53,7 +54,7 @@ class PolicyEngine:
         self.policies: dict[str, dict] = {}
         self._load()
 
-    _KNOWN_KEYS = {"id", "capabilities", "topics", "pii", "roles"}
+    _KNOWN_KEYS = {"id", "capabilities", "topics", "pii", "roles", "output"}
 
     def _load(self) -> None:
         if not self.policies_dir.is_dir():
@@ -111,6 +112,9 @@ class PolicyEngine:
                     self._validate_capabilities(
                         name, f"roles[{role_name!r}].capabilities", role_caps
                     )
+
+        if doc.get("output") is not None:
+            validate_section(name, doc["output"])
 
         # Validate PII section
         pii_section = doc.get("pii") or {}
@@ -313,6 +317,12 @@ class PolicyEngine:
                     decision.redacted_prompt = redacted
 
         return decision
+
+    def output_policy(self, application_id: str | None) -> OutputHandlingPolicy:
+        """LLM05 settings for an app: global defaults + its ``output:`` section."""
+        base = OutputHandlingPolicy.from_settings()
+        policy = self.policies.get(application_id) if application_id else None
+        return base.merged((policy or {}).get("output"))
 
     @staticmethod
     def _capability_lists(

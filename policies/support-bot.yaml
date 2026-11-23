@@ -23,3 +23,12 @@ topics:
 pii:
   action: redact            # block | redact | flag
   entities: [EMAIL, PHONE, SSN, CREDIT_CARD, PERSON, ADDRESS]
+
+# Improper output handling (LLM05): how model responses may contain images,
+# links and HTML. Defaults: images strip, links allow, html sanitize.
+output:
+  images: strip
+  links: allowlist
+  allowed_domains: [docs.acme.com]
+  html: sanitize
+  # sql: readonly        # for text-to-SQL apps; default allow

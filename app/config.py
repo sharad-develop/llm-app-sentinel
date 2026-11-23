@@ -100,6 +100,21 @@ class Settings(BaseSettings):
     max_system_prompt_length: int = 32768
     max_canaries: int = 16
 
+    # --- output handling (OWASP LLM05) ---
+    # Defaults for responses; a policy file's `output:` section overrides them
+    # per application. images/links: allow | allowlist | strip | block.
+    # html: allow | sanitize | block.
+    disable_output_handling: bool = False
+    output_images: str = "strip"
+    output_links: str = "allow"
+    output_html: str = "sanitize"
+    # SQL-injection indicators in responses: allow | flag (verdict `review`) |
+    # block | readonly (block + refuse any INSERT/UPDATE/DELETE/DDL). Off by
+    # default because ordinary answers contain SQL; enable for text-to-SQL.
+    output_sql: str = "allow"
+    # Comma-separated hosts (and their subdomains) for the `allowlist` mode.
+    output_allowed_domains: str = ""
+
     # --- output guard ---
     # Maximum model-output length in characters.
     max_output_length: int = 16384
@@ -171,6 +186,27 @@ class Settings(BaseSettings):
     def leak_positive(cls, v: int) -> int:
         if v < 1:
             raise ValueError("value must be >= 1")
+        return v
+
+    @field_validator("output_images", "output_links")
+    @classmethod
+    def valid_link_mode(cls, v: str) -> str:
+        if v not in {"allow", "allowlist", "strip", "block"}:
+            raise ValueError("must be one of allow, allowlist, strip, block")
+        return v
+
+    @field_validator("output_sql")
+    @classmethod
+    def valid_sql_mode(cls, v: str) -> str:
+        if v not in {"allow", "flag", "block", "readonly"}:
+            raise ValueError("must be one of allow, flag, block, readonly")
+        return v
+
+    @field_validator("output_html")
+    @classmethod
+    def valid_html_mode(cls, v: str) -> str:
+        if v not in {"allow", "sanitize", "block"}:
+            raise ValueError("must be one of allow, sanitize, block")
         return v
 
     @field_validator("semantic_leak_threshold")
