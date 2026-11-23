@@ -58,6 +58,7 @@ def _validate_thresholds(medium: float, high: float) -> None:
         raise ValueError("threshold_high must be greater than threshold_medium")
 from app.identity import StaticIdentityProvider
 from app.models.response import (
+    ContextCheckResponse,
     ToolCheckResponse,
     AnalyzeResponse,
     ClassifierStageResult,
@@ -75,6 +76,13 @@ from app.models.response import (
 )
 from app.pipeline.classifier import PromptGuardClassifier
 from app.pipeline.output_handling import handle_output
+from app.pipeline.context_guard import (
+    UNTRUSTED_CONTENT_NOTICE,
+    analyze_context,
+    build_context_rule_engine,
+    validate_source,
+    wrap_untrusted,
+)
 from app.pipeline.tool_guard import check_tool_call
 from app.pipeline.leakage import new_canary, run_leak_checks, validate_leak_inputs, with_canary
 from app.pipeline.semantic_leak import SemanticLeakDetector
@@ -109,6 +117,18 @@ class OutputBlocked(Exception):
         super().__init__(
             f"output blocked at {self.blocked_at}: {self.safety_categories}"
         )
+
+
+class ContextBlocked(Exception):
+    """Raised by check_context when raise_on_block=True and verdict is block."""
+
+    def __init__(self, result: ContextCheckResponse) -> None:
+        self.result = result
+        self.blocked_at = result.blocked_at
+        self.violations: list[str] = (
+            result.pipeline.rule_checks.violations if result.pipeline.rule_checks else []
+        )
+        super().__init__(f"context blocked at {self.blocked_at}: {self.violations}")
 
 
 class ToolBlocked(Exception):
@@ -157,6 +177,7 @@ class Guard:
 
         self._rule_engine: RuleEngine | None = None
         self._output_rule_engine: RuleEngine | None = None
+        self._context_rule_engine: RuleEngine | None = None
         self._classifier: PromptGuardClassifier | None = None
         self._safety: LlamaGuardClassifier | None = None
         self._policy_engine: PolicyEngine | None = None
@@ -557,6 +578,82 @@ class Guard:
         return new_canary()
 
     # ------------------------------------------------------------------
+    # Context guard (LLM01: indirect prompt injection)
+    # ------------------------------------------------------------------
+
+    UNTRUSTED_CONTENT_NOTICE = UNTRUSTED_CONTENT_NOTICE
+
+    def check_context(
+        self,
+        content: str,
+        *,
+        source: str | None = None,
+        application_id: str | None = None,
+        user_id: str | None = None,
+        session_id: str | None = None,
+        threshold_medium: float | None = None,
+        threshold_high: float | None = None,
+        raise_on_block: bool = False,
+    ) -> ContextCheckResponse:
+        """Vet untrusted content (retrieved document, web page, email, tool
+        result) **before** the model reads it.
+
+        Catches text that tries to instruct the model: injection phrases
+        (incl. multilingual), text addressed to the AI, "don't tell the user",
+        exfiltration directives, tool-call commands, characters smuggling
+        hidden ASCII, then scores it with Prompt Guard 2. Call it once per
+        document or chunk.
+
+        ``verdict``: ``block`` = drop it; ``review`` = quarantine (medium score,
+        hidden content, or the classifier couldn't run / content too long to
+        score); ``allow`` = pass ``sanitized_content`` on, ideally via
+        ``Guard.wrap_untrusted``.
+
+        Not rate limited (RAG calls it per chunk); content over
+        ``SENTINEL_MAX_CONTEXT_LENGTH`` must be chunked first.
+
+        Raises:
+            ValueError: empty content, content too long, or invalid ``source``.
+            ContextBlocked: when ``raise_on_block`` and the verdict is ``block``.
+        """
+        if not content:
+            raise ValueError("content must not be empty")
+        if len(content) > settings.max_context_length:
+            raise ValueError(f"content exceeds maximum length of {settings.max_context_length}")
+        validate_source(source)
+        t_medium = threshold_medium if threshold_medium is not None else settings.classifier_threshold_medium
+        t_high = threshold_high if threshold_high is not None else settings.classifier_threshold_high
+        _validate_thresholds(t_medium, t_high)
+        self._ensure_loaded()
+
+        request_id = str(uuid.uuid4())
+        hashed = prompt_hash(content)
+        result = analyze_context(
+            content, source=source,
+            rule_engine=self._context_rule_engine, classifier=self._classifier,
+            t_medium=t_medium, t_high=t_high, request_id=request_id, hashed=hashed,
+        )
+        audit_log(
+            request_id, f"context_check:{source}" if source else "context_check",
+            result.verdict, hashed,
+            application_id=application_id, user_id=user_id, session_id=session_id,
+            risk_score=result.risk_score,
+            violations=(
+                (result.pipeline.rule_checks.violations if result.pipeline.rule_checks else [])
+                + (result.pipeline.hidden_content.signals if result.pipeline.hidden_content else [])
+            ) or None,
+        )
+        if raise_on_block and result.verdict == "block":
+            raise ContextBlocked(result)
+        return result
+
+    @staticmethod
+    def wrap_untrusted(content: str, source: str = "document") -> str:
+        """Fence untrusted content in randomly-identified ``<untrusted_content>``
+        tags; add ``Guard.UNTRUSTED_CONTENT_NOTICE`` to your system prompt."""
+        return wrap_untrusted(content, source)
+
+    # ------------------------------------------------------------------
     # Tool-call guard (LLM06)
     # ------------------------------------------------------------------
 
@@ -643,6 +740,7 @@ class Guard:
             self._output_rule_engine = RuleEngine(
                 rules_path=Path(str(_rf("app") / "rules" / settings.output_rules_file))
             )
+            self._context_rule_engine = build_context_rule_engine()
             self._classifier = PromptGuardClassifier()
             self._classifier.load()
             self._safety = LlamaGuardClassifier()

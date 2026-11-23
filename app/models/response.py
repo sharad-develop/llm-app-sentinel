@@ -134,3 +134,33 @@ class ToolCheckResponse(BaseModel):
     requires_confirmation: bool = False
     call_hash: str
     meta: ResponseMeta
+
+
+# --- POST /v1/context/check ---
+
+
+class HiddenContentStageResult(BaseModel):
+    # unicode_tags | invisible_characters | css_hidden_text
+    signals: list[str] = []
+    # True when ASCII smuggled in Unicode tag characters was decoded and scanned.
+    decoded_hidden_text: bool = False
+
+
+class ContextPipelineDetail(BaseModel):
+    hidden_content: HiddenContentStageResult | None = None
+    normalization: NormalizationStageResult | None = None
+    rule_checks: RuleChecksStageResult | None = None
+    classifier: ClassifierStageResult | None = None
+
+
+class ContextCheckResponse(BaseModel):
+    request_id: str
+    verdict: Verdict
+    source: str | None = None
+    blocked_at: Literal["rule_checks", "classifier"] | None = None
+    risk_score: float | None = None
+    # Normalized content with hidden characters removed; None when blocked.
+    sanitized_content: str | None = None
+    content_hash: str
+    pipeline: ContextPipelineDetail
+    meta: ResponseMeta

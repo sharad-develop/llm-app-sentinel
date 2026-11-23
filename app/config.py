@@ -119,6 +119,16 @@ class Settings(BaseSettings):
     # Comma-separated hosts (and their subdomains) for the `allowlist` mode.
     output_allowed_domains: str = ""
 
+    # --- context guard (LLM01 indirect injection) ---
+    # Max length of one retrieved document / tool result, in characters.
+    # Longer content must be chunked by the caller.
+    max_context_length: int = 100000
+    # Classifier chunk cap for context (documents are longer than prompts).
+    # Content needing more chunks gets verdict `review`, never `allow`.
+    context_classifier_max_chunks: int = 32
+    # Filename of the context rule pack inside app/rules/.
+    context_rules_file: str = "context.yaml"
+
     # --- tool-call guard (LLM06) ---
     # Max serialized size of one tool call's arguments, and the default
     # max length of a string argument (a policy can override per argument).
@@ -170,7 +180,10 @@ class Settings(BaseSettings):
             raise ValueError("max_prompt_length must be >= 1")
         return v
 
-    @field_validator("max_request_bytes", "classifier_max_chunks", "rate_limit_max_keys")
+    @field_validator(
+        "max_request_bytes", "classifier_max_chunks", "rate_limit_max_keys",
+        "max_context_length", "context_classifier_max_chunks",
+    )
     @classmethod
     def positive_int(cls, v: int) -> int:
         if v < 1:

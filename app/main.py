@@ -15,6 +15,7 @@ import secrets
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
+from app.api.v1.context import router as context_router
 from app.api.v1.input import router as input_router
 from app.api.v1.output import router as output_router
 from app.api.v1.tools import router as tools_router
@@ -22,6 +23,7 @@ from app.config import settings
 from app.identity import StaticIdentityProvider
 from app.ratelimit import RateLimiter, RateLimitExceeded
 from app.pipeline.classifier import PromptGuardClassifier
+from app.pipeline.context_guard import build_context_rule_engine
 from app.pipeline.pii import PIIDetector
 from app.pipeline.policy import PolicyEngine
 from app.pipeline.rules import RuleEngine
@@ -47,6 +49,7 @@ async def lifespan(app: FastAPI):
     # Lazy: the embedding model loads on first use that supplies a system prompt.
     app.state.semantic_leak = SemanticLeakDetector()
     app.state.rule_engine = RuleEngine()
+    app.state.context_rule_engine = build_context_rule_engine()
     app.state.classifier = PromptGuardClassifier()
     app.state.classifier.load()
     # Output guard components
@@ -117,6 +120,7 @@ async def rate_limit_handler(request: Request, exc: RateLimitExceeded) -> Respon
 app.include_router(input_router, prefix="/v1")
 app.include_router(output_router, prefix="/v1")
 app.include_router(tools_router, prefix="/v1")
+app.include_router(context_router, prefix="/v1")
 
 
 @app.get("/healthz")

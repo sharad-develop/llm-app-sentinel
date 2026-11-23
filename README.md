@@ -255,6 +255,32 @@ out = guard.check_output(reply, system_prompt=system_prompt, semantic_leak=False
 - **Tuning:** a reply that legitimately mentions a rule ("I can't help with refunds that large") can score near the rule. Raise the threshold if you see false positives, and watch `pipeline.leakage.semantic_similarity` (returned even when it passes) to choose a value.
 - **Privacy:** only sentence embeddings, keyed by a hash of the prompt, are cached in memory; the prompt text is not retained.
 
+### Untrusted content (OWASP LLM01 — indirect prompt injection)
+
+Retrieved documents, web pages, emails and tool results are *data*, but the model reads them next to its instructions. Vet each one **before** it reaches the model:
+
+```python
+from sentinel import ContextBlocked
+
+for doc in retrieved_chunks:
+    r = guard.check_context(doc.text, source="retrieval", application_id="support-bot")
+    if r.verdict == "allow":
+        context.append(Guard.wrap_untrusted(r.sanitized_content, "retrieval"))
+    # "block" -> drop it; "review" -> quarantine / hold for a human
+
+system_prompt += "\n" + Guard.UNTRUSTED_CONTENT_NOTICE
+```
+
+| Check | Catches |
+|-------|---------|
+| Hidden content | ASCII smuggled in invisible Unicode tag characters (decoded, scanned, then stripped), long runs of zero-width characters, CSS-hidden text (`display:none`, `font-size:0`, white-on-white) → at least `review` |
+| Rules | The input injection/delimiter patterns, now also **multilingual** (es, fr, de, pt, it, ru, zh, ja, ko "ignore previous instructions"), plus `rules/context.yaml`: text addressed to the AI, "when you summarize this…", "new instructions:", "don't tell the user", exfiltration directives, tool-call commands → `block` |
+| Classifier | Prompt Guard 2 over the whole document (up to `SENTINEL_CONTEXT_CLASSIFIER_MAX_CHUNKS`); too long to score, or classifier unavailable → `review`, never `allow` |
+
+`Guard.wrap_untrusted` fences content in `<untrusted_content id="…">` tags with a random id, so a document cannot forge the closing tag. REST: `POST /v1/context/check` with `{"content", "source", "context", "options"}`.
+
+**Limits:** this reduces risk; it cannot make untrusted text trustworthy. Multilingual coverage is the "ignore previous instructions" family only; other phrasings in other languages rely on the classifier. Retrieved HTML with `display:none` (e.g. email preheaders) is flagged for review — strip markup first if that is noisy. Not rate limited (RAG calls it per chunk); content over `SENTINEL_MAX_CONTEXT_LENGTH` must be chunked first. Pair it with `check_tool_call` and least-privilege tools.
+
 ### Tool calls (OWASP LLM06)
 
 If your model can call tools, its output is a command. Validate each call **before** the agent runs it:
@@ -305,7 +331,7 @@ Violations name the argument, never its value. A role's own `tools:` section rep
 ### Exceptions
 
 ```python
-from sentinel import PromptBlocked, OutputBlocked, ToolBlocked
+from sentinel import PromptBlocked, OutputBlocked, ToolBlocked, ContextBlocked
 
 try:
     result = guard.check_input(prompt, raise_on_block=True)
@@ -349,7 +375,7 @@ A YAML rule pack (`app/rules/default.yaml`) defines regex pattern categories:
 
 | Category | Examples |
 |----------|----------|
-| `injection_patterns` | role override phrases, "reveal system prompt", jailbreak markers |
+| `injection_patterns` | role override phrases (also "ignore previous instructions" in 9 languages), "reveal system prompt", jailbreak markers |
 | `delimiter_patterns` | fake `[SYSTEM]` / `<\|im_start\|>` tokens, chat template injections |
 | `secret_patterns` | OpenAI/Anthropic/Google/Stripe/Slack/GitLab/GitHub/npm/Hugging Face/SendGrid keys, AWS access keys, JWTs, credentials in URLs, PEM private keys |
 
@@ -569,6 +595,20 @@ Returns `{ "verdict": "allow|review|block", "sanitized_prompt": "...", "blocked_
 
 Returns `{ "verdict": "allow|review|block", "sanitized_output": "...", "safety_categories": [...], "pipeline": {...}, "meta": {...} }`.
 
+### `POST /v1/context/check`
+
+Vet untrusted content before the model reads it ([details](#untrusted-content-owasp-llm01--indirect-prompt-injection)).
+
+```json
+{
+  "content": "retrieved document / web page / tool result (1–100000 chars)",
+  "source": "retrieval (optional label, for audit)",
+  "context": { "application_id": "string | null" }
+}
+```
+
+Returns `{ "verdict": "allow|review|block", "sanitized_content": "...", "blocked_at": "rule_checks|classifier", "risk_score": 0.12, "pipeline": {"hidden_content", "normalization", "rule_checks", "classifier"}, "meta": {...} }`.
+
 ### `POST /v1/tools/check`
 
 Validate an agent tool call before running it ([details](#tool-calls-owasp-llm06)).
@@ -634,6 +674,9 @@ All values can be set in `.env` (prefix `SENTINEL_`) or as environment variables
 | Variable | Default | Effect |
 |----------|---------|--------|
 | `SENTINEL_MAX_OUTPUT_LENGTH` | `16384` | Maximum output length in characters |
+| `SENTINEL_MAX_CONTEXT_LENGTH` | `100000` | Max length of one piece of untrusted content, in characters |
+| `SENTINEL_CONTEXT_CLASSIFIER_MAX_CHUNKS` | `32` | Classifier chunks scored per document; more → verdict `review` |
+| `SENTINEL_CONTEXT_RULES_FILE` | `context.yaml` | Context rule pack filename (inside `app/rules/`) |
 | `SENTINEL_TOOL_MAX_ARGS_BYTES` | `16384` | Max serialized size of one tool call's arguments |
 | `SENTINEL_TOOL_ARG_MAX_LENGTH` | `4096` | Default max length of a string tool argument (per-argument `max_length` overrides) |
 | `SENTINEL_OUTPUT_RULES_FILE` | `output.yaml` | Output rule pack filename (resolved inside `app/rules/` package directory) |

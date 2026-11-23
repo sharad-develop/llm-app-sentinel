@@ -34,7 +34,15 @@ class RuleCheckResult:
 
 
 class RuleEngine:
-    def __init__(self, rules_path: Path | None = None):
+    def __init__(
+        self,
+        rules_path: Path | None = None,
+        categories: set[str] | None = None,
+        check_encoded: bool = True,
+    ):
+        """``categories`` limits which ``*_patterns`` groups are loaded;
+        ``check_encoded=False`` skips the encoded-blob ratio check (for
+        content where base64/hex is normal, e.g. retrieved documents)."""
         # When no explicit path is given, resolve via importlib.resources so the
         # engine works correctly in both source trees and installed wheels.
         if rules_path is None:
@@ -43,14 +51,22 @@ class RuleEngine:
             self._resource = rules_path
         self.max_encoded_ratio = settings.max_encoded_ratio
         self.min_blob_length = settings.min_blob_length
+        self.check_encoded = check_encoded
         self.rules: list[CompiledRule] = []
-        self._load()
+        self._load(self._resource, categories)
 
-    def _load(self) -> None:
-        raw = yaml.safe_load(self._resource.read_text(encoding="utf-8"))
+    def add_pack(self, path: Path, categories: set[str] | None = None) -> None:
+        """Load another rule pack on top of this one."""
+        self._load(path, categories)
+
+    def _load(self, resource, categories: set[str] | None = None) -> None:
+        raw = yaml.safe_load(resource.read_text(encoding="utf-8"))
         # Any top-level `*_patterns` key is a rule category, so the same
         # engine serves both the input and output rule packs.
-        for category in (k for k in raw if k.endswith("_patterns")):
+        for category in (
+            k for k in raw
+            if k.endswith("_patterns") and (categories is None or k in categories)
+        ):
             for entry in raw.get(category, []) or []:
                 self.rules.append(
                     CompiledRule(
@@ -68,7 +84,7 @@ class RuleEngine:
             if rule.pattern.search(text):
                 violations.append(rule.id)
 
-        if self._encoded_ratio(text) > self.max_encoded_ratio:
+        if self.check_encoded and self._encoded_ratio(text) > self.max_encoded_ratio:
             violations.append("excessive_encoded_content")
 
         return RuleCheckResult(passed=not violations, violations=violations)

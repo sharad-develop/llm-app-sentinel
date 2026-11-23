@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.config import settings
+from app.pipeline.context_guard import validate_source
 from app.pipeline.leakage import validate_canary
 
 # Compiled once at import time from the config value.
@@ -109,3 +110,24 @@ class ToolCheckRequest(BaseModel):
     tool: str = Field(min_length=1, max_length=128)
     arguments: dict[str, Any] = Field(default_factory=dict)
     context: PromptContext | None = None
+
+
+class ContextCheckRequest(BaseModel):
+    """Request schema for POST /v1/context/check (LLM01, indirect injection).
+
+    `content` is untrusted text the model is about to read — a retrieved
+    document chunk, web page, email, or tool result. `source` labels where it
+    came from (for audit); it does not change the checks.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    content: str = Field(min_length=1, max_length=settings.max_context_length)
+    source: str | None = Field(default=None, max_length=64)
+    context: PromptContext | None = None
+    options: AnalyzeOptions = Field(default_factory=AnalyzeOptions)
+
+    @field_validator("source")
+    @classmethod
+    def valid_source(cls, v: str | None) -> str | None:
+        return validate_source(v)

@@ -128,7 +128,7 @@ class PromptGuardClassifier:
     def available(self) -> bool:
         return self._model is not None
 
-    def score(self, text: str) -> ClassifierScore:
+    def score(self, text: str, max_chunks: int | None = None) -> ClassifierScore:
         if not self.enabled:
             return ClassifierScore(ran=False, note="classifier_disabled")
         if self._model is None:
@@ -154,10 +154,11 @@ class PromptGuardClassifier:
         # fail-safe (caller maps ran=False to `review`), unlike truncating,
         # which would let an attacker hide a payload past the cutoff.
         n_chunks = encoded["input_ids"].shape[0]
-        if n_chunks > settings.classifier_max_chunks:
+        limit = max_chunks if max_chunks is not None else settings.classifier_max_chunks
+        if n_chunks > limit:
             return ClassifierScore(
                 ran=False,
-                note=f"input_too_long: {n_chunks} chunks > {settings.classifier_max_chunks}",
+                note=f"input_too_long: {n_chunks} chunks > {limit}",
             )
         input_ids = encoded["input_ids"].to(self._device)
         attention_mask = encoded["attention_mask"].to(self._device)

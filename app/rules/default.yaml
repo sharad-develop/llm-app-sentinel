@@ -15,6 +15,9 @@ injection_patterns:
   - id: jailbreak_marker
     description: Common jailbreak persona markers
     pattern: '\b(do\s+anything\s+now|developer\s+mode\s+enabled|jailbreak(ed)?\s+mode)\b'
+  - id: role_override_multilingual
+    description: '"Ignore previous instructions" in Spanish, French, German, Portuguese, Italian, Russian, Chinese, Japanese, Korean'
+    pattern: '(ignora(r)?\s+(todas\s+)?las\s+(instrucciones|indicaciones)\s+(anteriores|previas)|ignore[zr]?\s+(toutes\s+)?(les\s+)?(instructions|consignes)\s+pr[ée]c[ée]dentes|ignorier(e|en)?\s+(alle\s+)?(vorherigen|bisherigen|obigen|fr[üu]heren)\s+(anweisungen|instruktionen|befehle)|ignor(e|ar)\s+(todas\s+as\s+)?instru[cç](õ|o)es\s+anteriores|ignora\s+(tutte\s+)?le\s+(istruzioni|indicazioni)\s+precedenti|(игнорируй|игнорируйте|забудь|забудьте)\s+(все\s+)?(предыдущие|прежние|прошлые|вышеуказанные)\s+(инструкции|указания|команды)|(忽略|无视|忘记|忘掉)(你)?(之前|以上|先前|前面|上述|所有)(的)?(所有|全部)?(指令|指示|提示|说明|规则)|(以前|これまで|上記|先ほど)の(指示|命令|ルール|プロンプト)を(すべて)?(無視|忘れ)|(이전|위의|앞의)\s*(모든\s*)?(지시|명령|지침)(사항)?(을|를)?\s*(모두\s*|전부\s*)?(무시|잊))'
 
 delimiter_patterns:
   - id: fake_system_delimiter

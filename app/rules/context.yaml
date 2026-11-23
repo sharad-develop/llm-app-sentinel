@@ -1,0 +1,35 @@
+# Context rule pack (OWASP LLM01 — indirect prompt injection).
+# Applied, on top of the injection and delimiter patterns of default.yaml, to
+# untrusted content the model will read: retrieved documents, web pages,
+# emails, tool results. Such content is data; text in it that addresses the
+# model or tells it what to do is an attack, not a legitimate instruction.
+# Case-insensitive unless the pattern says otherwise.
+
+context_patterns:
+  - id: addressed_to_ai
+    description: Text addressed to the AI/assistant rather than to a human reader
+    pattern: '\b(note|notice|attention|message|instructions?|important)\s*(to|for)\s+(the\s+)?(ai|a\.i\.|assistant|llm|language\s+model|chatbot|agent|model)\b'
+  - id: instruction_on_processing
+    description: Instruction triggered by the model reading or summarizing this content
+    pattern: '\b(when|if|as)\s+(you\s+(are\s+)?)?(summari[sz]ing|summari[sz]e|reading|processing|analy[sz]ing|translating|answering)\s+(this|the\s+following)\b[^.\n]{0,80}\b(you\s+(must|should|will|need)|always|first|instead)\b'
+  - id: new_instructions
+    description: Announcing replacement instructions or a new task
+    pattern: '\b(new|updated|revised|additional|real|actual)\s+(instructions?|system\s+prompt|task|directive)s?\s*:'
+  - id: conceal_from_user
+    description: Telling the model to hide something from the user
+    pattern: '\b(do\s+not|don''?t|never)\s+(tell|inform|mention|reveal|disclose|alert|notify)\s+(this\s+to\s+)?(the\s+)?(user|human|person)\b'
+  - id: exfiltration_directive
+    description: Directing the model to send conversation data or secrets to an external address
+    pattern: '\b(send|forward|post|upload|transmit|email|leak|exfiltrate|append|include)\b[^.\n]{0,60}\b(conversation|chat\s+history|system\s+prompt|previous\s+messages|user''?s?\s+(data|messages|information)|api\s+keys?|credentials|passwords?|secrets?)\b[^.\n]{0,80}(https?://|\bto\s+[\w.+-]+@)'
+  - id: tool_call_directive
+    description: Commanding the model to invoke a tool
+    pattern: '\b(you\s+(must|should|will|need\s+to)|now|immediately|first)\s*,?\s*(call|invoke|use|run|execute)\s+(the\s+)?[\w.-]{2,40}\s+(tool|function|command)\b'
+  - id: priority_claim
+    description: Claiming priority over the model's real instructions
+    pattern: '(\b(this|these)\s+(instructions?|message|text)\s+(takes?|have|has)\s+(priority|precedence)\s+over\b|\bhighest[\s-]+priority\s+instruction\b)'
+  - id: stop_following_rules
+    description: Telling the model to stop obeying its rules
+    pattern: '\b(stop|cease)\s+(following|obeying|adhering\s+to)\s+(your|the|all)\b'
+  - id: redefine_behavior
+    description: '"From now on you ..." behavior redefinition'
+    pattern: '\bfrom\s+now\s+on\s*,?\s+you\b'
