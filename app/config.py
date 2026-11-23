@@ -112,6 +112,10 @@ class Settings(BaseSettings):
     # block | readonly (block + refuse any INSERT/UPDATE/DELETE/DDL). Off by
     # default because ordinary answers contain SQL; enable for text-to-SQL.
     output_sql: str = "allow"
+    # Secrets of no known format (key=value assignments, high-entropy tokens):
+    # allow | flag (verdict `review`) | redact | block. Known key formats are
+    # always blocked by the output rule pack.
+    output_secrets: str = "flag"
     # Comma-separated hosts (and their subdomains) for the `allowlist` mode.
     output_allowed_domains: str = ""
 
@@ -193,6 +197,13 @@ class Settings(BaseSettings):
     def valid_link_mode(cls, v: str) -> str:
         if v not in {"allow", "allowlist", "strip", "block"}:
             raise ValueError("must be one of allow, allowlist, strip, block")
+        return v
+
+    @field_validator("output_secrets")
+    @classmethod
+    def valid_secrets_mode(cls, v: str) -> str:
+        if v not in {"allow", "flag", "redact", "block"}:
+            raise ValueError("must be one of allow, flag, redact, block")
         return v
 
     @field_validator("output_sql")

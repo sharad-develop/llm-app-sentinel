@@ -299,7 +299,7 @@ A YAML rule pack (`app/rules/default.yaml`) defines regex pattern categories:
 |----------|----------|
 | `injection_patterns` | role override phrases, "reveal system prompt", jailbreak markers |
 | `delimiter_patterns` | fake `[SYSTEM]` / `<\|im_start\|>` tokens, chat template injections |
-| `secret_patterns` | OpenAI/Anthropic keys, AWS access keys, GitHub tokens, PEM blocks |
+| `secret_patterns` | OpenAI/Anthropic/Google/Stripe/Slack/GitLab/GitHub/npm/Hugging Face/SendGrid keys, AWS access keys, JWTs, credentials in URLs, PEM private keys |
 
 A base64/hex ratio heuristic catches obfuscated payloads: if more than 40% of the prompt is base64-like blobs (≥ 40 chars each), it's flagged.
 
@@ -372,7 +372,7 @@ pii:
 |--------|-----------|
 | Exfiltration images/links, `<script>` / event-handler HTML, `javascript:` URLs in a response | Output handling stage (parser-verified; per-app `output:` policy) |
 | Model discloses its system prompt / hidden instructions | Output rule pack (`leak_patterns`); optional canary + semantic system-prompt check (`leakage`) |
-| Credentials or API keys in a response | Output rule pack (`secret_patterns`) |
+| Credentials or API keys in a response | Output rule pack (`secret_patterns`) for known formats; entropy scan (`secrets:`) for the rest |
 | Raw chat-template tokens leaking into output | Output rule pack (`leak_patterns`) |
 | Harmful content (violence, CSAM, weapons, self-harm, …) | Llama Guard 3-1B (14 hazard categories) |
 | Blocked topics appearing in responses | Per-application policy (topics) |
@@ -411,6 +411,7 @@ output:
   allowed_domains: [docs.acme.com]   # subdomains match too
   html: sanitize           # coding assistants: html: allow
   sql: readonly            # text-to-SQL apps: single read-only query only
+  secrets: redact          # unknown-format secrets: allow | flag (default) | redact | block
 ```
 
 Global defaults come from `SENTINEL_OUTPUT_IMAGES`, `SENTINEL_OUTPUT_LINKS`, `SENTINEL_OUTPUT_HTML` and `SENTINEL_OUTPUT_ALLOWED_DOMAINS`; a policy file's `output:` section overrides them per application. `strip` keeps the link text or image alt text and removes the URL. A response that is changed still gets verdict `allow` with the cleaned text in `sanitized_output`; `block` mode returns `blocked_at: "output_handling"`. Report: `pipeline.output_handling` (`findings`, `actions`).
@@ -580,6 +581,7 @@ All values can be set in `.env` (prefix `SENTINEL_`) or as environment variables
 | `SENTINEL_OUTPUT_IMAGES` | `strip` | Default for markdown images: `allow` · `allowlist` · `strip` · `block` |
 | `SENTINEL_OUTPUT_LINKS` | `allow` | Default for links/URLs: `allow` · `allowlist` · `strip` · `block` |
 | `SENTINEL_OUTPUT_HTML` | `sanitize` | Default for raw HTML: `allow` · `sanitize` · `block` |
+| `SENTINEL_OUTPUT_SECRETS` | `flag` | Unknown-format secrets (`api_key = "…"`, high-entropy tokens): `allow` · `flag` · `redact` · `block`. Heuristic, so it flags rather than blocks by default |
 | `SENTINEL_OUTPUT_SQL` | `allow` | Default for SQL-injection indicators: `allow` · `flag` · `block` · `readonly` |
 | `SENTINEL_OUTPUT_ALLOWED_DOMAINS` | *(empty)* | Comma-separated hosts for `allowlist` mode (subdomains match) |
 | `SENTINEL_SAFETY_MODEL` | `meta-llama/Llama-Guard-3-1B` | Llama Guard model id or local path |

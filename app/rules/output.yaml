@@ -31,4 +31,40 @@ secret_patterns:
     pattern: '\bgh[pousr]_[A-Za-z0-9]{36,}\b'
   - id: private_key_block
     description: PEM private key material
-    pattern: '-----BEGIN\s+(RSA\s+|EC\s+|OPENSSH\s+)?PRIVATE\s+KEY-----'
+    pattern: '-----BEGIN\s+([A-Z]+\s+)*PRIVATE\s+KEY(\s+BLOCK)?-----'
+  - id: github_fine_grained_token
+    description: GitHub fine-grained personal access token
+    pattern: '(?-i:\bgithub_pat_[A-Za-z0-9_]{50,}\b)'
+  - id: gitlab_token
+    description: GitLab personal access token
+    pattern: '(?-i:\bglpat-[A-Za-z0-9_-]{20,}\b)'
+  - id: slack_token
+    description: Slack bot/user/app token
+    pattern: '(?-i:\bxox[abeprs]-[A-Za-z0-9-]{10,}\b)'
+  - id: slack_webhook
+    description: Slack incoming-webhook URL
+    pattern: 'https://hooks\.slack\.com/services/T[A-Za-z0-9]+/B[A-Za-z0-9]+/[A-Za-z0-9]+'
+  - id: stripe_key
+    description: Stripe secret or restricted key
+    pattern: '(?-i:\b[sr]k_(live|test)_[A-Za-z0-9]{16,}\b)'
+  - id: google_api_key
+    description: Google API key
+    pattern: '(?-i:\bAIza[0-9A-Za-z_-]{35}\b)'
+  - id: huggingface_token
+    description: Hugging Face access token
+    pattern: '(?-i:\bhf_[A-Za-z0-9]{34,}\b)'
+  - id: npm_token
+    description: npm access token
+    pattern: '(?-i:\bnpm_[A-Za-z0-9]{36}\b)'
+  - id: sendgrid_key
+    description: SendGrid API key
+    pattern: '(?-i:\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b)'
+  - id: aws_temp_access_key
+    description: AWS temporary/role access key id
+    pattern: '(?-i:\b(ASIA|AROA|AIDA)[0-9A-Z]{16}\b)'
+  - id: jwt
+    description: JSON Web Token (header.payload.signature)
+    pattern: '(?-i:\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})'
+  - id: credentials_in_url
+    description: Credentials embedded in a connection string or URL
+    pattern: '\b[a-z][a-z0-9+.-]{1,20}://[^\s:/@]{1,64}:[^\s:/@]{3,}@[^\s/]+'

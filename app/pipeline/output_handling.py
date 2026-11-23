@@ -13,12 +13,15 @@ policy:
 
   * SQL-injection indicators (stacked/destructive statements, tautologies,
     UNION SELECT, ...) — opt-in, see ``sql_guard.py``
+  * secrets of no known format (``api_key = "..."``, high-entropy tokens) —
+    see ``secret_scan.py`` (LLM02; known formats are caught by the rule packs)
 
 Modes (per policy, see ``OutputHandlingPolicy``):
   images / links: ``allow`` | ``allowlist`` (allowed_domains) | ``strip`` | ``block``
   html:           ``allow`` | ``sanitize`` | ``block``
   sql:            ``allow`` | ``flag`` (verdict review) | ``block`` | ``readonly``
                   (block, and also refuse any INSERT/UPDATE/DELETE/DDL)
+  secrets:        ``allow`` | ``flag`` (verdict review) | ``redact`` | ``block``
 
 Markdown is *detected* with a real CommonMark parser (markdown-it-py) so
 reference-style links, autolinks and nesting can't slip past a regex. It is
@@ -39,11 +42,13 @@ import nh3
 from markdown_it import MarkdownIt
 
 from app.config import settings
+from app.pipeline.secret_scan import SECRET_MODES, find_secrets, redact_secrets
 from app.pipeline.sql_guard import detect_sql
 
 IMAGE_MODES = LINK_MODES = {"allow", "allowlist", "strip", "block"}
 HTML_MODES = {"allow", "sanitize", "block"}
 SQL_MODES = {"allow", "flag", "block", "readonly"}
+SECRETS_MODES = SECRET_MODES
 
 _DANGEROUS_SCHEMES = {"javascript", "data", "vbscript"}
 # A tag-shaped construct: <name ...> / </name> / <!-- / <!doctype. No space
@@ -75,6 +80,7 @@ class OutputHandlingPolicy:
     links: str = "allow"
     html: str = "sanitize"
     sql: str = "allow"
+    secrets: str = "flag"
     allowed_domains: tuple[str, ...] = ()
 
     @classmethod
@@ -84,6 +90,7 @@ class OutputHandlingPolicy:
             links=settings.output_links,
             html=settings.output_html,
             sql=settings.output_sql,
+            secrets=settings.output_secrets,
             allowed_domains=tuple(
                 d.strip().lower() for d in settings.output_allowed_domains.split(",") if d.strip()
             ),
@@ -99,6 +106,7 @@ class OutputHandlingPolicy:
             links=section.get("links", self.links),
             html=section.get("html", self.html),
             sql=section.get("sql", self.sql),
+            secrets=section.get("secrets", self.secrets),
             allowed_domains=tuple(d.lower() for d in domains)
             if domains is not None else self.allowed_domains,
         )
@@ -118,7 +126,7 @@ class OutputHandlingResult:
     findings: list[str] = field(default_factory=list)  # e.g. "image", "link", "html"
     actions: list[str] = field(default_factory=list)   # e.g. "strip_image", "sanitize_html"
     blocked: bool = False
-    review: bool = False  # hold for human review (sql: flag)
+    review: bool = False  # hold for human review (sql/secrets: flag)
     sql_indicators: list[str] = field(default_factory=list)
     note: str | None = None
 
@@ -131,10 +139,10 @@ def validate_section(name: str, section: object) -> None:
     """Validate a policy file's ``output:`` section (raises ValueError)."""
     if not isinstance(section, dict):
         raise ValueError(f"policy {name!r}: 'output' must be a mapping")
-    unknown = set(section) - {"images", "links", "html", "sql", "allowed_domains"}
+    unknown = set(section) - {"images", "links", "html", "sql", "secrets", "allowed_domains"}
     if unknown:
         raise ValueError(f"policy {name!r}: output has unknown keys {sorted(unknown)}")
-    for key, valid in (("images", IMAGE_MODES), ("links", LINK_MODES), ("html", HTML_MODES), ("sql", SQL_MODES)):
+    for key, valid in (("images", IMAGE_MODES), ("links", LINK_MODES), ("html", HTML_MODES), ("sql", SQL_MODES), ("secrets", SECRETS_MODES)):
         if key in section and section[key] not in valid:
             raise ValueError(
                 f"policy {name!r}: output.{key} must be one of {sorted(valid)}, "
@@ -312,6 +320,20 @@ def _has_html(text: str, policy: OutputHandlingPolicy) -> bool:
 def handle_output(text: str, policy: OutputHandlingPolicy) -> OutputHandlingResult:
     """Detect and neutralize dangerous constructs in ``text`` per ``policy``."""
     res = OutputHandlingResult(text=text, ran=True)
+
+    # Secrets first, so a redacted value never reaches the later scans.
+    if policy.secrets != "allow":
+        spans = find_secrets(text)
+        if spans:
+            res.findings.append("secret")
+            if policy.secrets == "flag":
+                res.review = True
+            elif policy.secrets == "block":
+                res.blocked = True
+                return res
+            else:  # redact
+                text = res.text = redact_secrets(text, spans)
+                res.actions.append("redact_secret")
 
     # SQL indicators are detected, never rewritten: a "sanitized" query is
     # still a query nobody asked for.

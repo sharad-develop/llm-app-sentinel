@@ -32,3 +32,4 @@ output:
   allowed_domains: [docs.acme.com]
   html: sanitize
   # sql: readonly        # for text-to-SQL apps; default allow
+  # secrets: redact      # unknown-format secrets: allow | flag (default) | redact | block
