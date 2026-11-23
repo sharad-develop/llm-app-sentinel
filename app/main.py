@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.v1.input import router as input_router
 from app.api.v1.output import router as output_router
+from app.api.v1.tools import router as tools_router
 from app.config import settings
 from app.identity import StaticIdentityProvider
 from app.ratelimit import RateLimiter, RateLimitExceeded
@@ -115,6 +116,7 @@ async def rate_limit_handler(request: Request, exc: RateLimitExceeded) -> Respon
 
 app.include_router(input_router, prefix="/v1")
 app.include_router(output_router, prefix="/v1")
+app.include_router(tools_router, prefix="/v1")
 
 
 @app.get("/healthz")

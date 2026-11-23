@@ -255,10 +255,57 @@ out = guard.check_output(reply, system_prompt=system_prompt, semantic_leak=False
 - **Tuning:** a reply that legitimately mentions a rule ("I can't help with refunds that large") can score near the rule. Raise the threshold if you see false positives, and watch `pipeline.leakage.semantic_similarity` (returned even when it passes) to choose a value.
 - **Privacy:** only sentence embeddings, keyed by a hash of the prompt, are cached in memory; the prompt text is not retained.
 
+### Tool calls (OWASP LLM06)
+
+If your model can call tools, its output is a command. Validate each call **before** the agent runs it:
+
+```python
+from sentinel import ToolBlocked
+
+r = guard.check_tool_call(
+    "read_doc", {"path": model_args["path"]},
+    application_id="support-bot", user_id=user_id,
+)
+if r.verdict == "block":      # r.violations e.g. ["arg_path:path"]
+    ...
+elif r.verdict == "review":   # valid, but the policy wants a human to approve it
+    ...                       # r.requires_confirmation is True
+```
+
+It is **deny-by-default** against the policy's `tools:` section, and a call with no `application_id` (or no policy) is always blocked.
+
+```yaml
+tools:
+  allowed:
+    search_kb:
+      args:
+        query: {type: string, required: true, max_length: 500}
+    read_doc:
+      args:
+        path: {kind: path, roots: [/srv/docs], required: true}
+    send_email:
+      confirm: true            # valid calls return `review`
+      args:
+        to: {pattern: '[^@\s]+@acme\.com', required: true}
+```
+
+| Check | Blocks |
+|-------|--------|
+| Tool / arguments | Unlisted tools, undeclared arguments, missing required ones, wrong type, oversized (`max_length`, `minimum`/`maximum`, `enum`, `pattern` — full match) |
+| `kind: path` | Relative paths, `..` (also percent-encoded), anything outside `roots` |
+| `kind: url` | Non-http(s), embedded credentials, loopback / private / link-local / cloud-metadata hosts, numeric-obfuscated IPs, hosts outside `allowed_domains` |
+| `kind: sql` | Anything the [SQL indicators](#stage-2c--output-handling-owasp-llm05) flag; read-only by default (`readonly: false` allows writes, still blocks destructive SQL) |
+| `kind: shell` | Shell metacharacters (`; & \| \` $ < > ( ) { } \` and newlines) |
+| Secrets | Known key formats, and high-entropy values in free-text arguments (skipped for arguments pinned by `pattern` or `enum`) |
+
+Violations name the argument, never its value. A role's own `tools:` section replaces the default one (like capabilities). REST: `POST /v1/tools/check` with `{"tool", "arguments", "context": {"application_id", "user_id"}}`. Calls count against the same rate limit as the other checks.
+
+**Limits:** this validates what the model *asked for*. It cannot see symlinks, DNS rebinding, or what the tool does internally. Keep least privilege at the tool itself (scoped credentials, `subprocess` without `shell=True`, parameterized queries).
+
 ### Exceptions
 
 ```python
-from sentinel import PromptBlocked, OutputBlocked
+from sentinel import PromptBlocked, OutputBlocked, ToolBlocked
 
 try:
     result = guard.check_input(prompt, raise_on_block=True)
@@ -273,6 +320,11 @@ except OutputBlocked as e:
     e.blocked_at         # stage that blocked it
     e.safety_categories  # Llama Guard hazard codes, if applicable
     e.result             # the full OutputAnalyzeResponse
+
+try:
+    guard.check_tool_call(tool, args, application_id=app_id, raise_on_block=True)
+except ToolBlocked as e:
+    e.tool, e.violations  # e.g. "read_doc", ["arg_path:path"]
 ```
 
 ---
@@ -517,6 +569,20 @@ Returns `{ "verdict": "allow|review|block", "sanitized_prompt": "...", "blocked_
 
 Returns `{ "verdict": "allow|review|block", "sanitized_output": "...", "safety_categories": [...], "pipeline": {...}, "meta": {...} }`.
 
+### `POST /v1/tools/check`
+
+Validate an agent tool call before running it ([details](#tool-calls-owasp-llm06)).
+
+```json
+{
+  "tool": "read_doc",
+  "arguments": { "path": "/srv/docs/a.md" },
+  "context": { "application_id": "support-bot", "user_id": "string | null" }
+}
+```
+
+Returns `{ "verdict": "allow|review|block", "tool": "...", "violations": [...], "requires_confirmation": false, "call_hash": "...", "meta": {...} }`.
+
 ### `GET /healthz`
 
 ```json
@@ -568,6 +634,8 @@ All values can be set in `.env` (prefix `SENTINEL_`) or as environment variables
 | Variable | Default | Effect |
 |----------|---------|--------|
 | `SENTINEL_MAX_OUTPUT_LENGTH` | `16384` | Maximum output length in characters |
+| `SENTINEL_TOOL_MAX_ARGS_BYTES` | `16384` | Max serialized size of one tool call's arguments |
+| `SENTINEL_TOOL_ARG_MAX_LENGTH` | `4096` | Default max length of a string tool argument (per-argument `max_length` overrides) |
 | `SENTINEL_OUTPUT_RULES_FILE` | `output.yaml` | Output rule pack filename (resolved inside `app/rules/` package directory) |
 | `SENTINEL_DISABLE_SEMANTIC_LEAK` | `false` | Turn off the embedding-similarity leak check (overridable per call with `semantic_leak`) |
 | `SENTINEL_SEMANTIC_LEAK_MODEL` | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` | Sentence-embedding model id or local path |

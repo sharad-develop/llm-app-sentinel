@@ -119,6 +119,12 @@ class Settings(BaseSettings):
     # Comma-separated hosts (and their subdomains) for the `allowlist` mode.
     output_allowed_domains: str = ""
 
+    # --- tool-call guard (LLM06) ---
+    # Max serialized size of one tool call's arguments, and the default
+    # max length of a string argument (a policy can override per argument).
+    tool_max_args_bytes: int = 16384
+    tool_arg_max_length: int = 4096
+
     # --- output guard ---
     # Maximum model-output length in characters.
     max_output_length: int = 16384

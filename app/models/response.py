@@ -118,3 +118,19 @@ class OutputAnalyzeResponse(BaseModel):
     output_hash: str
     pipeline: OutputPipelineDetail
     meta: ResponseMeta
+
+
+# --- POST /v1/tools/check ---
+
+
+class ToolCheckResponse(BaseModel):
+    request_id: str
+    verdict: Verdict
+    tool: str
+    # Machine-readable reasons, e.g. "tool_not_allowed", "arg_path:file".
+    # They name the argument, never its value.
+    violations: list[str] = []
+    # True when the call is valid but the policy requires a human to approve it.
+    requires_confirmation: bool = False
+    call_hash: str
+    meta: ResponseMeta

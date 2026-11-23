@@ -4,6 +4,7 @@ FastAPI + Pydantic reject malformed requests with a 422 before any
 pipeline logic runs. Limits and patterns are read from app.config.
 """
 import re
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -93,3 +94,18 @@ class OutputAnalyzeRequest(BaseModel):
         if v is not None and _CONTROL_CHARS.search(v):
             raise ValueError("field contains disallowed control characters")
         return v
+
+
+class ToolCheckRequest(BaseModel):
+    """Request schema for POST /v1/tools/check (LLM06).
+
+    `tool` and `arguments` are exactly what the model asked the agent to run.
+    `context.application_id` selects the policy whose ``tools:`` section
+    applies; without one, every tool call is denied.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    tool: str = Field(min_length=1, max_length=128)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    context: PromptContext | None = None

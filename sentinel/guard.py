@@ -16,6 +16,7 @@ Drop the REST API. Import Guard, call check_input / check_output, done::
     if out.verdict != "block":
         return out.sanitized_output
 """
+import json
 import re
 import threading
 import time
@@ -57,6 +58,7 @@ def _validate_thresholds(medium: float, high: float) -> None:
         raise ValueError("threshold_high must be greater than threshold_medium")
 from app.identity import StaticIdentityProvider
 from app.models.response import (
+    ToolCheckResponse,
     AnalyzeResponse,
     ClassifierStageResult,
     LeakageStageResult,
@@ -73,6 +75,7 @@ from app.models.response import (
 )
 from app.pipeline.classifier import PromptGuardClassifier
 from app.pipeline.output_handling import handle_output
+from app.pipeline.tool_guard import check_tool_call
 from app.pipeline.leakage import new_canary, run_leak_checks, validate_leak_inputs, with_canary
 from app.pipeline.semantic_leak import SemanticLeakDetector
 from app.pipeline.normalization import normalize
@@ -106,6 +109,16 @@ class OutputBlocked(Exception):
         super().__init__(
             f"output blocked at {self.blocked_at}: {self.safety_categories}"
         )
+
+
+class ToolBlocked(Exception):
+    """Raised by check_tool_call when raise_on_block=True and verdict is block."""
+
+    def __init__(self, result: ToolCheckResponse) -> None:
+        self.result = result
+        self.tool = result.tool
+        self.violations: list[str] = result.violations
+        super().__init__(f"tool call {result.tool!r} blocked: {result.violations}")
 
 
 class Guard:
@@ -542,6 +555,69 @@ class Guard:
     def new_canary() -> str:
         """Return a fresh canary token to embed in your system prompt."""
         return new_canary()
+
+    # ------------------------------------------------------------------
+    # Tool-call guard (LLM06)
+    # ------------------------------------------------------------------
+
+    def check_tool_call(
+        self,
+        tool: str,
+        arguments: dict,
+        *,
+        application_id: str | None = None,
+        user_id: str | None = None,
+        session_id: str | None = None,
+        raise_on_block: bool = False,
+    ) -> ToolCheckResponse:
+        """Validate a tool call the model asked for, before the agent runs it.
+
+        Deny-by-default against the application's ``tools:`` policy: unlisted
+        tools, unknown or malformed arguments, path traversal, SSRF URLs,
+        non-read-only SQL, shell metacharacters and secrets in arguments are
+        all blocked. ``verdict == "review"`` means the call is valid but the
+        policy requires human confirmation (``requires_confirmation``).
+
+        Without an ``application_id`` (or with no policy for it) every call
+        is blocked.
+
+        Raises:
+            ToolBlocked: when ``raise_on_block`` and the verdict is ``block``.
+            RateLimitExceeded: the caller exceeded the rate limit.
+        """
+        self._ensure_loaded()
+        self._rate_limiter.check(rate_limit_key(user_id, application_id, "sdk"))
+        start = time.perf_counter()
+        request_id = str(uuid.uuid4())
+        hashed = prompt_hash(json.dumps([tool, arguments], sort_keys=True, default=str))
+        roles = ["default"]
+        if user_id:
+            roles = self._identity_provider.resolve(user_id).roles
+        decision = check_tool_call(
+            tool, arguments,
+            self._policy_engine.tool_rules(application_id, roles),
+            rule_engine=self._output_rule_engine,
+        )
+        audit_log(
+            request_id, "tool_call", decision.verdict, hashed,
+            application_id=application_id, user_id=user_id, session_id=session_id,
+            violations=[decision.tool] + decision.violations if decision.violations else None,
+        )
+        result = ToolCheckResponse(
+            request_id=request_id,
+            verdict=decision.verdict,
+            tool=decision.tool,
+            violations=decision.violations,
+            requires_confirmation=decision.requires_confirmation,
+            call_hash=hashed,
+            meta=ResponseMeta(
+                latency_ms=int((time.perf_counter() - start) * 1000),
+                timestamp=_utc_now(),
+            ),
+        )
+        if raise_on_block and result.verdict == "block":
+            raise ToolBlocked(result)
+        return result
 
     @staticmethod
     def with_canary(system_prompt: str) -> tuple[str, str]:

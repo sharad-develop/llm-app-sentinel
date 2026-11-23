@@ -21,6 +21,7 @@ import yaml
 from app.config import settings
 from app.pipeline.output_handling import OutputHandlingPolicy, validate_section
 from app.pipeline.pii import PIIDetector, redact
+from app.pipeline.tool_guard import validate_tools_section
 
 logger = logging.getLogger("llm_sentinel.policy")
 
@@ -54,7 +55,7 @@ class PolicyEngine:
         self.policies: dict[str, dict] = {}
         self._load()
 
-    _KNOWN_KEYS = {"id", "capabilities", "topics", "pii", "roles", "output"}
+    _KNOWN_KEYS = {"id", "capabilities", "topics", "pii", "roles", "output", "tools"}
 
     def _load(self) -> None:
         if not self.policies_dir.is_dir():
@@ -101,7 +102,7 @@ class PolicyEngine:
                     raise ValueError(
                         f"policy {name!r}: roles[{role_name!r}] must be a mapping"
                     )
-                unknown_role_keys = set(role_def) - {"capabilities"}
+                unknown_role_keys = set(role_def) - {"capabilities", "tools"}
                 if unknown_role_keys:
                     raise ValueError(
                         f"policy {name!r}: roles[{role_name!r}] has unknown keys "
@@ -115,6 +116,11 @@ class PolicyEngine:
 
         if doc.get("output") is not None:
             validate_section(name, doc["output"])
+        if doc.get("tools") is not None:
+            validate_tools_section(name, doc["tools"])
+        for role_name, role_def in (roles_section or {}).items():
+            if role_def.get("tools") is not None:
+                validate_tools_section(name, role_def["tools"], f"roles[{role_name!r}].tools")
 
         # Validate PII section
         pii_section = doc.get("pii") or {}
@@ -323,6 +329,21 @@ class PolicyEngine:
         base = OutputHandlingPolicy.from_settings()
         policy = self.policies.get(application_id) if application_id else None
         return base.merged((policy or {}).get("output"))
+
+    def tool_rules(self, application_id: str | None, roles: list[str]) -> dict | None:
+        """LLM06: the ``tools:`` section for an app, or None (deny everything).
+
+        A role's own ``tools:`` section replaces the default one (first
+        matching role wins), like capabilities.
+        """
+        policy = self.policies.get(application_id) if application_id else None
+        if policy is None:
+            return None
+        for role in roles:
+            role_tools = ((policy.get("roles") or {}).get(role) or {}).get("tools")
+            if role_tools is not None:
+                return role_tools
+        return policy.get("tools")
 
     @staticmethod
     def _capability_lists(

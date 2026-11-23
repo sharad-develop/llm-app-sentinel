@@ -33,3 +33,28 @@ output:
   html: sanitize
   # sql: readonly        # for text-to-SQL apps; default allow
   # secrets: redact      # unknown-format secrets: allow | flag (default) | redact | block
+
+# Agent tool calls (LLM06). Deny-by-default: only listed tools, with only the
+# listed arguments, are allowed. Checked by guard.check_tool_call() or
+# POST /v1/tools/check. A role's own `tools:` replaces this section.
+tools:
+  allowed:
+    search_kb:
+      args:
+        query: {type: string, required: true, max_length: 500}
+        limit: {type: integer, minimum: 1, maximum: 20}
+    read_doc:
+      args:
+        path: {kind: path, roots: [/srv/docs], required: true}
+    fetch_page:
+      args:
+        url: {kind: url, allowed_domains: [docs.acme.com], required: true}
+    lookup_order:
+      args:
+        sql: {kind: sql, required: true}   # read-only unless `readonly: false`
+    send_email:
+      confirm: true                        # valid calls return `review`
+      args:
+        to: {pattern: '[^@\s]+@acme\.com', required: true}
+        subject: {max_length: 200}
+        body: {max_length: 5000}
