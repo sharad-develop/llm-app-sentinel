@@ -7,11 +7,9 @@ property the real embedding model provides.
 import math
 
 import pytest
-from fastapi.testclient import TestClient
 
-from app.config import settings
-from app.main import app
-from app.pipeline.semantic_leak import SemanticLeakDetector, split_segments
+from sentinel.config import settings
+from sentinel.pipeline.semantic_leak import SemanticLeakDetector, split_segments
 from sentinel import Guard
 
 CONCEPTS = [
@@ -167,13 +165,3 @@ class TestSdk:
     def test_no_prompt_text_in_response(self):
         out = self.guard().check_output(PARAPHRASE, system_prompt=SYSTEM, semantic_leak=True)
         assert "hundred dollars with customers" not in out.model_dump_json()
-
-
-class TestRest:
-    def test_flag_on_request(self):
-        with TestClient(app) as c:
-            app.state.semantic_leak = SemanticLeakDetector(embed_fn=fake_embed)
-            body = {"output": PARAPHRASE, "system_prompt": SYSTEM}
-            assert c.post("/v1/output/analyze", json=body).json().get("blocked_at") is None
-            on = c.post("/v1/output/analyze", json={**body, "semantic_leak": True})
-            assert on.json()["blocked_at"] == "leakage"

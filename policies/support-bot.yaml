@@ -6,7 +6,7 @@ capabilities:
   blocked: [code_execution, file_write]   # explicit deny wins over allowed
 
 # Optional per-role capability overrides. Roles come from the
-# IdentityProvider (see app/identity.py). First matching role wins.
+# IdentityProvider (see sentinel/identity.py). First matching role wins.
 roles:
   admin:
     capabilities:

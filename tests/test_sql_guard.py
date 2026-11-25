@@ -1,12 +1,10 @@
 """SQL-injection indicator tests (OWASP LLM05)."""
 import pytest
 import yaml
-from fastapi.testclient import TestClient
 
-from app.config import settings
-from app.main import app
-from app.pipeline.output_handling import OutputHandlingPolicy, handle_output
-from app.pipeline.sql_guard import detect_sql
+from sentinel.config import settings
+from sentinel.pipeline.output_handling import OutputHandlingPolicy, handle_output
+from sentinel.pipeline.sql_guard import detect_sql
 from sentinel import Guard, OutputBlocked
 
 
@@ -124,10 +122,3 @@ class TestPolicyAndSdk:
         g = self.guard(tmp_path, "nope")
         with pytest.raises(ValueError):  # policies load on first use
             g.check_output("hi", application_id="bot")
-
-    def test_rest(self, monkeypatch):
-        monkeypatch.setattr(settings, "output_sql", "block")
-        with TestClient(app) as c:
-            r = c.post("/v1/output/analyze", json={"output": "x'; DROP TABLE users;--"})
-            assert r.json()["blocked_at"] == "output_handling"
-            assert r.json()["pipeline"]["output_handling"]["sql_indicators"]

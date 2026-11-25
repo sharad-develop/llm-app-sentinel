@@ -26,9 +26,10 @@ informed when possible, and credit researchers according to their preference.
 
 ## Deployment security notes
 
-- The REST sidecar accepts caller-supplied application and identity context.
-  Configure `SENTINEL_API_KEY` or protect it with an authenticated trusted
-  network boundary such as mTLS or a service mesh.
+- The SDK trusts the `application_id` / `user_id` its caller passes. If you
+  expose it over HTTP (llm-sentry-gateway), configure `SENTINEL_API_KEY` or
+  protect it with an authenticated trusted network boundary such as mTLS or a
+  service mesh.
 - Do not expose the example static identity file or example admin role to
   untrusted callers.
 - Treat policy files, model configuration, and rule packs as security-sensitive

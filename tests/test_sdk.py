@@ -54,7 +54,7 @@ def test_no_raise_when_allowed(guard):
 
 
 def test_check_input_returns_analyze_response(guard):
-    from app.models.response import AnalyzeResponse
+    from sentinel.models.response import AnalyzeResponse
     result = guard.check_input("test")
     assert isinstance(result, AnalyzeResponse)
     assert result.request_id
@@ -110,7 +110,7 @@ def test_raise_on_output_block(guard):
 
 
 def test_check_output_returns_response(guard):
-    from app.models.response import OutputAnalyzeResponse
+    from sentinel.models.response import OutputAnalyzeResponse
     result = guard.check_output("All good here.")
     assert isinstance(result, OutputAnalyzeResponse)
     assert result.request_id

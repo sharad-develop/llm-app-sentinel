@@ -1,6 +1,6 @@
 """llm-sentinel Python SDK — in-process guard with no server required.
 
-Drop the REST API. Import Guard, call check_input / check_output, done::
+In-process, no server or network hop. Import Guard, call check_input / check_output, done::
 
     from sentinel import Guard, PromptBlocked
 
@@ -23,11 +23,13 @@ import time
 import uuid
 from pathlib import Path
 
-from app.audit import audit_log, prompt_hash
-from app.config import settings
-from app.ratelimit import RateLimiter, RateLimitExceeded, rate_limit_key
+from sentinel.audit import audit_log, prompt_hash
+from sentinel.config import settings
+from sentinel.ratelimit import (
+    RateLimiter, RateLimitExceeded, TokenBudgetExceeded, estimate_tokens, rate_limit_key,
+)
 
-# Compiled once at import time — mirrors app/models/request.py.
+# Compiled once at import time — mirrors sentry_gateway/models/request.py (the REST gateway).
 _CONTROL_CHARS = re.compile(f"[{settings.control_chars_pattern}]")
 
 
@@ -56,8 +58,8 @@ def _validate_thresholds(medium: float, high: float) -> None:
         raise ValueError("threshold_high must be between 0.0 and 1.0")
     if high <= medium:
         raise ValueError("threshold_high must be greater than threshold_medium")
-from app.identity import StaticIdentityProvider
-from app.models.response import (
+from sentinel.identity import StaticIdentityProvider
+from sentinel.models.response import (
     ContextCheckResponse,
     ToolCheckResponse,
     AnalyzeResponse,
@@ -74,23 +76,23 @@ from app.models.response import (
     RuleChecksStageResult,
     SafetyStageResult,
 )
-from app.pipeline.classifier import PromptGuardClassifier
-from app.pipeline.output_handling import handle_output
-from app.pipeline.context_guard import (
+from sentinel.pipeline.classifier import PromptGuardClassifier
+from sentinel.pipeline.output_handling import handle_output
+from sentinel.pipeline.context_guard import (
     UNTRUSTED_CONTENT_NOTICE,
     analyze_context,
     build_context_rule_engine,
     validate_source,
     wrap_untrusted,
 )
-from app.pipeline.tool_guard import check_tool_call
-from app.pipeline.leakage import new_canary, run_leak_checks, validate_leak_inputs, with_canary
-from app.pipeline.semantic_leak import SemanticLeakDetector
-from app.pipeline.normalization import normalize
-from app.pipeline.pii import PIIDetector
-from app.pipeline.policy import PolicyEngine
-from app.pipeline.rules import RuleEngine
-from app.pipeline.safety import LlamaGuardClassifier
+from sentinel.pipeline.tool_guard import check_tool_call
+from sentinel.pipeline.leakage import new_canary, run_leak_checks, validate_leak_inputs, with_canary
+from sentinel.pipeline.semantic_leak import SemanticLeakDetector
+from sentinel.pipeline.normalization import normalize
+from sentinel.pipeline.pii import PIIDetector
+from sentinel.pipeline.policy import PolicyEngine
+from sentinel.pipeline.rules import RuleEngine
+from sentinel.pipeline.safety import LlamaGuardClassifier
 
 
 class PromptBlocked(Exception):
@@ -158,6 +160,11 @@ class Guard:
             ``SENTINEL_RATE_LIMIT_REQUESTS``. Counters are per Guard instance.
         rate_limit_window: Window in seconds. Defaults to
             ``SENTINEL_RATE_LIMIT_WINDOW_SECONDS``.
+        token_budget: Max estimated tokens of checked text (prompts, responses,
+            context) per caller per window; raises ``TokenBudgetExceeded``. 0
+            disables. Defaults to ``SENTINEL_TOKEN_BUDGET_TOKENS``.
+        token_budget_window: Window in seconds. Defaults to
+            ``SENTINEL_TOKEN_BUDGET_WINDOW_SECONDS``.
     """
 
     def __init__(
@@ -167,11 +174,21 @@ class Guard:
         identity_provider=None,
         rate_limit: int | None = None,
         rate_limit_window: float | None = None,
+        token_budget: int | None = None,
+        token_budget_window: float | None = None,
     ) -> None:
         self._policy_dir = Path(policy_dir) if policy_dir else None
         self._identity_provider_override = identity_provider
         self._semantic_leak = SemanticLeakDetector()  # lazy: loads on first use
         self._rate_limiter = RateLimiter(limit=rate_limit, window=rate_limit_window)
+        self._token_budget = RateLimiter(
+            limit=settings.token_budget_tokens if token_budget is None else token_budget,
+            window=(
+                settings.token_budget_window_seconds
+                if token_budget_window is None else token_budget_window
+            ),
+            exc=TokenBudgetExceeded,
+        )
         self._load_lock = threading.Lock()
         self._loaded = False
 
@@ -246,6 +263,7 @@ class Guard:
         """
         _validate_prompt_text(prompt)
         self._rate_limiter.check(rate_limit_key(user_id, application_id, "sdk"))
+        self._token_budget.check(rate_limit_key(user_id, application_id, "sdk"), estimate_tokens(prompt))
         t_medium = threshold_medium if threshold_medium is not None else settings.classifier_threshold_medium
         t_high = threshold_high if threshold_high is not None else settings.classifier_threshold_high
         _validate_thresholds(t_medium, t_high)
@@ -405,6 +423,7 @@ class Guard:
         _validate_output_text(output)
         validate_leak_inputs(system_prompt, canaries)
         self._rate_limiter.check(rate_limit_key(user_id, application_id, "sdk"))
+        self._token_budget.check(rate_limit_key(user_id, application_id, "sdk"), estimate_tokens(output))
 
         self._ensure_loaded()
         start = time.perf_counter()
@@ -499,12 +518,10 @@ class Guard:
                 else None,
                 note=decision.note,
             )
-            pii_detector_failed = (
-                decision.note is not None and "unavailable" in decision.note
-            )
-            # Only tell Llama Guard to skip S7 (privacy) when PII detection
-            # actually ran — not when it was attempted but unavailable.
-            pii_handled = decision.pii_action is not None and not pii_detector_failed
+            pii_detector_failed = decision.pii_detector_failed
+            # The policy may suppress S7 only when it fully redacted the
+            # detected PII; flag and partial policies keep S7 enabled.
+            pii_handled = decision.pii_fully_handled
             if decision.redacted_prompt is not None:
                 sanitized = decision.redacted_prompt
             if decision.verdict == "block":
@@ -528,7 +545,14 @@ class Guard:
                 # PII handling was configured but the detector couldn't run —
                 # don't hand back potentially PII-containing text as sanitized.
                 if pii_detector_failed:
-                    sanitized = None
+                    audit_log(
+                        request_id, "output_policy", verdict, hashed,
+                        application_id=application_id, user_id=user_id,
+                        session_id=session_id,
+                    )
+                    return _output_response(
+                        request_id, verdict, pipeline, hashed, start
+                    )
             audit_log(
                 request_id, "output_policy", verdict, hashed,
                 application_id=application_id, user_id=user_id, session_id=session_id,
@@ -609,7 +633,8 @@ class Guard:
         score); ``allow`` = pass ``sanitized_content`` on, ideally via
         ``Guard.wrap_untrusted``.
 
-        Not rate limited (RAG calls it per chunk); content over
+        It shares the request rate limit with input/output checks and also
+        counts against the token budget; content over
         ``SENTINEL_MAX_CONTEXT_LENGTH`` must be chunked first.
 
         Raises:
@@ -621,6 +646,9 @@ class Guard:
         if len(content) > settings.max_context_length:
             raise ValueError(f"content exceeds maximum length of {settings.max_context_length}")
         validate_source(source)
+        key = rate_limit_key(user_id, application_id, "sdk")
+        self._rate_limiter.check(key)
+        self._token_budget.check(key, estimate_tokens(content))
         t_medium = threshold_medium if threshold_medium is not None else settings.classifier_threshold_medium
         t_high = threshold_high if threshold_high is not None else settings.classifier_threshold_high
         _validate_thresholds(t_medium, t_high)
@@ -738,7 +766,7 @@ class Guard:
             from importlib.resources import files as _rf
             self._rule_engine = RuleEngine()
             self._output_rule_engine = RuleEngine(
-                rules_path=Path(str(_rf("app") / "rules" / settings.output_rules_file))
+                rules_path=Path(str(_rf("sentinel") / "rules" / settings.output_rules_file))
             )
             self._context_rule_engine = build_context_rule_engine()
             self._classifier = PromptGuardClassifier()
@@ -759,7 +787,7 @@ class Guard:
 # ------------------------------------------------------------------
 
 def _utc_now() -> str:
-    from app.audit import utc_now
+    from sentinel.audit import utc_now
     return utc_now()
 
 

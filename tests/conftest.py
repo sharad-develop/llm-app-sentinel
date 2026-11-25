@@ -2,7 +2,7 @@
 
 Tests inject fakes for the classifier and PII detector; loading the real
 models (and downloading them on first run) would only slow the suite.
-Must run before app.config is imported, hence env vars set at conftest
+Must run before sentinel.config is imported, hence env vars set at conftest
 import time.
 """
 import os

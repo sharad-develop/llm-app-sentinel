@@ -1,6 +1,6 @@
 """Unit tests for normalization and rule-check stages."""
-from app.pipeline.normalization import normalize
-from app.pipeline.rules import RuleEngine
+from sentinel.pipeline.normalization import normalize
+from sentinel.pipeline.rules import RuleEngine
 
 
 class TestNormalization:

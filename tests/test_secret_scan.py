@@ -1,15 +1,15 @@
 """LLM02: known-format secret rules + generic (entropy) secret scan."""
 import pytest
 
-from app.pipeline.output_handling import (
+from sentinel.pipeline.output_handling import (
     OutputHandlingPolicy, handle_output, validate_section,
 )
-from app.pipeline.rules import RuleEngine
-from app.pipeline.secret_scan import REDACTION, find_secrets, shannon_entropy
+from sentinel.pipeline.rules import RuleEngine
+from sentinel.pipeline.secret_scan import REDACTION, find_secrets, shannon_entropy
 from pathlib import Path
-import app
+import sentinel
 
-RULES = Path(app.__file__).parent / "rules"
+RULES = Path(sentinel.__file__).parent / "rules"
 
 KNOWN = {
     "github_fine_grained_token": "github_pat_" + "A1b2C3d4E5" * 6,

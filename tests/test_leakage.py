@@ -1,9 +1,7 @@
 """System-prompt leakage tests (OWASP LLM07)."""
 import pytest
-from fastapi.testclient import TestClient
 
-from app.main import app
-from app.pipeline.leakage import check_leakage, new_canary, with_canary
+from sentinel.pipeline.leakage import check_leakage, new_canary, with_canary
 from sentinel import Guard, OutputBlocked
 
 SYSTEM = (
@@ -74,18 +72,3 @@ class TestSdk:
     def test_oversized_system_prompt_rejected(self):
         with pytest.raises(ValueError):
             Guard().check_output("x", system_prompt="a " * 40000)
-
-
-class TestRest:
-    def test_canary(self):
-        with TestClient(app) as c:
-            r = c.post(
-                "/v1/output/analyze",
-                json={"output": "x cnry-0123456789abcdef", "canaries": ["cnry-0123456789abcdef"]},
-            )
-            assert r.json()["blocked_at"] == "leakage"
-
-    def test_short_canary_422(self):
-        with TestClient(app) as c:
-            r = c.post("/v1/output/analyze", json={"output": "hi", "canaries": ["abc"]})
-            assert r.status_code == 422

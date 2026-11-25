@@ -1,14 +1,12 @@
 """LLM06: tool-call guard."""
 import pytest
-from fastapi.testclient import TestClient
 
-from app.main import app
-from app.pipeline.policy import PolicyEngine
-from app.pipeline.rules import RuleEngine
-from app.pipeline.tool_guard import check_tool_call, validate_tools_section
+from sentinel.pipeline.policy import PolicyEngine
+from sentinel.pipeline.rules import RuleEngine
+from sentinel.pipeline.tool_guard import check_tool_call, validate_tools_section
 from sentinel import Guard, ToolBlocked
 from pathlib import Path
-import app as app_pkg
+import sentinel as sentinel_pkg
 
 TOOLS = {
     "allowed": {
@@ -167,7 +165,7 @@ class TestSecrets:
         assert "arg_secret:query" in violations("search", {"query": 'api_key="Zk8fQ2xP9mTn4VbL7wRc"'})
 
     def test_known_key_via_rule_engine(self):
-        rules = RuleEngine(rules_path=Path(app_pkg.__file__).parent / "rules" / "output.yaml")
+        rules = RuleEngine(rules_path=Path(sentinel_pkg.__file__).parent / "rules" / "output.yaml")
         r = check_tool_call("search", {"query": "AKIA" + "ABCDEFGHIJKLMNOP"}, TOOLS, rule_engine=rules)
         assert "arg_secret:query" in r.violations
 
@@ -231,22 +229,6 @@ class TestSdkAndRest:
     def test_sdk_no_application_denies(self):
         r = Guard.from_policy("policies").check_tool_call("search_kb", {"query": "hi"})
         assert r.verdict == "block" and r.violations == ["no_tool_policy"]
-
-    def test_rest(self):
-        with TestClient(app) as c:
-            ok = c.post("/v1/tools/check", json={
-                "tool": "read_doc", "arguments": {"path": "/srv/docs/a.md"},
-                "context": {"application_id": "support-bot"},
-            })
-            assert ok.status_code == 200 and ok.json()["verdict"] == "allow"
-            bad = c.post("/v1/tools/check", json={
-                "tool": "read_doc", "arguments": {"path": "/etc/passwd"},
-                "context": {"application_id": "support-bot"},
-            }).json()
-            assert bad["verdict"] == "block" and "arg_path:path" in bad["violations"]
-            assert "/etc/passwd" not in str(bad)
-            none = c.post("/v1/tools/check", json={"tool": "read_doc", "arguments": {}}).json()
-            assert none["violations"] == ["no_tool_policy"]
 
 
 def test_empty_non_dict_args_rejected():

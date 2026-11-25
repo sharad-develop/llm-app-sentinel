@@ -37,26 +37,16 @@ Run the automated checks from the repository root:
 
 ```bash
 python -m pytest -q
-python -m compileall -q app sentinel tests examples
-for script in e2e/*.sh; do bash -n "$script" || exit 1; done
+python -m compileall -q sentinel tests examples scripts
 git diff --check
 ```
 
-The end-to-end scripts require a running server and exercise the REST API:
-
-```bash
-uvicorn app.main:app --port 8000
-./e2e/run_all.sh
-```
-
-The e2e scripts assume the local server is running in a trusted environment.
-When `SENTINEL_API_KEY` is configured, use an authenticated client or add the
-matching bearer header to the scripts before running them.
+The REST API and its end-to-end scripts live in the separate llm-sentry-gateway project.
 
 ## Code guidelines
 
 - Keep deterministic checks cheap and place them before model-backed stages.
-- Keep input and output behavior consistent between the SDK and REST API.
+- Keep input and output behavior consistent between the SDK and the gateway (which only wraps the SDK — put logic in `sentinel/`, not in the gateway).
 - Do not log prompt, output, secret, or PII content. Audit records should use
   hashes or explicitly approved identifiers only.
 - Add regression tests for security-sensitive behavior, including both the

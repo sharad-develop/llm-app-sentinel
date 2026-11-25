@@ -1,11 +1,9 @@
 """Resource-limit tests (OWASP LLM10): rate limiting, body size, chunk cap."""
 import pytest
-from fastapi.testclient import TestClient
 
-from app.config import settings
-from app.main import app
-from app.pipeline.classifier import PromptGuardClassifier
-from app.ratelimit import RateLimiter, RateLimitExceeded
+from sentinel.config import settings
+from sentinel.pipeline.classifier import PromptGuardClassifier
+from sentinel.ratelimit import RateLimiter, RateLimitExceeded
 from sentinel import Guard
 
 
@@ -78,43 +76,6 @@ class TestSdkRateLimit:
         g.check_output("fine response", user_id="u1")
         with pytest.raises(RateLimitExceeded):
             g.check_output("fine response", user_id="u1")
-
-
-class TestRestLimits:
-    def test_429_with_retry_after(self):
-        with TestClient(app) as c:
-            app.state.rate_limiter = RateLimiter(limit=1, window=60)
-            body = {"prompt": "hello", "context": {"user_id": "u1"}}
-            assert c.post("/v1/input/analyze", json=body).status_code == 200
-            r = c.post("/v1/input/analyze", json=body)
-            assert r.status_code == 429
-            assert int(r.headers["Retry-After"]) >= 1
-
-    def test_output_endpoint_rate_limited(self):
-        with TestClient(app) as c:
-            app.state.rate_limiter = RateLimiter(limit=1, window=60)
-            body = {"output": "hello"}
-            assert c.post("/v1/output/analyze", json=body).status_code == 200
-            assert c.post("/v1/output/analyze", json=body).status_code == 429
-
-    def test_oversized_body_413(self, monkeypatch):
-        monkeypatch.setattr(settings, "max_request_bytes", 100)
-        with TestClient(app) as c:
-            r = c.post("/v1/input/analyze", json={"prompt": "x" * 500})
-            assert r.status_code == 413
-
-    def test_missing_content_length_411(self):
-        with TestClient(app) as c:
-            r = c.post(
-                "/v1/input/analyze",
-                content=iter([b'{"prompt":"hi"}']),
-                headers={"Content-Type": "application/json"},
-            )
-            assert r.status_code == 411
-
-    def test_healthz_unaffected(self):
-        with TestClient(app) as c:
-            assert c.get("/healthz").status_code == 200
 
 
 class TestClassifierChunkCap:

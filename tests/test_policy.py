@@ -2,9 +2,9 @@
 import pytest
 from pathlib import Path
 
-from app.identity import Identity, StaticIdentityProvider
-from app.pipeline.pii import PIIEntity, redact
-from app.pipeline.policy import PolicyEngine
+from sentinel.identity import Identity, StaticIdentityProvider
+from sentinel.pipeline.pii import PIIEntity, redact
+from sentinel.pipeline.policy import PolicyEngine
 
 POLICIES_DIR = Path(__file__).resolve().parents[1] / "policies"
 
@@ -299,13 +299,13 @@ class TestEntityType:
     """_entity_type retypes refined spans by what the text actually is."""
 
     def test_email_retyped_regardless_of_model_label(self):
-        from app.pipeline.pii import _entity_type
+        from sentinel.pipeline.pii import _entity_type
 
         assert _entity_type("USERNAME", "john.smith@example.com") == "EMAIL"
         assert _entity_type("GIVENNAME", "a@b.co") == "EMAIL"
 
     def test_non_email_keeps_canonical_mapping(self):
-        from app.pipeline.pii import _entity_type
+        from sentinel.pipeline.pii import _entity_type
 
         assert _entity_type("USERNAME", "john.smith") == "USERNAME"
         assert _entity_type("PER", "John Smith") == "PERSON"
@@ -318,7 +318,7 @@ class TestEmailRegexFallback:
     def _detector_with_no_ml(self):
         """A PIIDetector whose _pipeline returns no entities (simulates model miss)."""
         from unittest.mock import MagicMock
-        from app.pipeline.pii import PIIDetector
+        from sentinel.pipeline.pii import PIIDetector
 
         d = PIIDetector.__new__(PIIDetector)
         d.enabled = True
@@ -335,7 +335,7 @@ class TestEmailRegexFallback:
 
     def test_email_not_duplicated_when_ml_already_found_it(self):
         from unittest.mock import MagicMock
-        from app.pipeline.pii import PIIDetector
+        from sentinel.pipeline.pii import PIIDetector
 
         d = PIIDetector.__new__(PIIDetector)
         d.enabled = True
