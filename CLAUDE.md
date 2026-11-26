@@ -15,7 +15,7 @@ python -m pytest tests/test_tool_guard.py -q   # single file
 python -m compileall -q sentinel tests examples scripts
 git diff --check
 
-# Security tooling (mirrors .github/workflows/ci.yml, needs ".[security]")
+# Security tooling (needs ".[security]"; run locally, no CI workflow is committed yet)
 bandit -c pyproject.toml -r sentinel scripts
 semgrep scan --config p/python --config p/owasp-top-ten --error --quiet sentinel scripts
 pip-audit --strict
