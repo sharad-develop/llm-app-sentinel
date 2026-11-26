@@ -57,3 +57,6 @@ htmlcov/
 
 # Build artifacts
 *.log
+
+# Claude Code personal overrides
+.claude/settings.local.json

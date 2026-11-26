@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest:*)",
+      "Bash(pytest:*)",
+      "Bash(python -m compileall:*)",
+      "Bash(python -m py_compile:*)",
+      "Bash(python scripts/calibrate.py:*)",
+      "Bash(python examples/:*)",
+      "Bash(bandit:*)",
+      "Bash(semgrep scan:*)",
+      "Bash(pip-audit:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)"
+    ],
+    "ask": [
+      "Bash(git push:*)",
+      "Bash(pip install:*)",
+      "Bash(python -m pip install:*)",
+      "Bash(python scripts/pin_models.py:*)",
+      "Bash(huggingface-cli:*)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./identities.yaml)",
+      "Read(~/.cache/huggingface/token)",
+      "Read(~/.huggingface/token)",
+      "Edit(./venv/**)",
+      "Edit(./build/**)",
+      "Edit(./llm_sentinel.egg-info/**)"
+    ]
+  },
+  "env": {
+    "SENTINEL_DISABLE_CLASSIFIER": "true",
+    "SENTINEL_DISABLE_PII": "true",
+    "SENTINEL_DISABLE_SAFETY": "true",
+    "SENTINEL_DISABLE_SEMANTIC_LEAK": "true"
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/validate_edit.sh",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
