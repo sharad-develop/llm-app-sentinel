@@ -1,4 +1,4 @@
-# LLM Security Architecture: Defense-in-Depth Against Prompt Injection and Agentic AI Threats
+# Defense-in-Depth Security Architecture for LLM Applications
 
 LLM applications introduce a new security boundary: natural-language input can influence model behavior, and model behavior can trigger real-world actions. Treat user input, retrieved content, model output, and tool arguments as untrusted.
 
