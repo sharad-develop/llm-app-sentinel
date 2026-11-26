@@ -116,8 +116,16 @@ class OutputBlocked(Exception):
         self.result = result
         self.blocked_at = result.blocked_at
         self.safety_categories: list[str] = result.safety_categories or []
+        # Rule-check and leakage blocks carry their reasons here, not in
+        # safety_categories (which only the Llama Guard stage fills).
+        p = result.pipeline
+        self.violations: list[str] = [
+            *(p.rule_checks.violations if p.rule_checks else []),
+            *(p.leakage.violations if p.leakage else []),
+        ]
         super().__init__(
-            f"output blocked at {self.blocked_at}: {self.safety_categories}"
+            f"output blocked at {self.blocked_at}: "
+            f"{self.safety_categories or self.violations}"
         )
 
 

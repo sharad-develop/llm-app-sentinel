@@ -47,13 +47,10 @@ def handle_message(
         print(f"[blocked input] stage={e.blocked_at} violations={e.violations}")
         return "I can't help with that request."
 
-    if inp.verdict == "review":
-        # Optionally route to a human review queue here.
+    # Treat review as a hold point. A sanitized value may still be present for
+    # observability, but it should not be forwarded without an approval path.
+    if inp.verdict != "allow" or inp.sanitized_prompt is None:
         print(f"[review input] risk_score={inp.risk_score}")
-
-    # sanitized_prompt is None when the input is under review and could not
-    # be fully sanitized (e.g. PII detector unavailable). Don't forward it.
-    if inp.sanitized_prompt is None:
         return "Your request is being reviewed. Please try again shortly."
 
     # --- call the LLM with the sanitized prompt ---
@@ -68,7 +65,10 @@ def handle_message(
             raise_on_block=True,
         )
     except OutputBlocked as e:
-        print(f"[blocked output] stage={e.blocked_at} categories={e.safety_categories}")
+        print(
+            f"[blocked output] stage={e.blocked_at} "
+            f"violations={e.violations} categories={e.safety_categories}"
+        )
         return "Something went wrong. Please try again."
 
     return out.sanitized_output
